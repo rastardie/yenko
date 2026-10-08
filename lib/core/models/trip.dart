@@ -112,6 +112,8 @@ class Booking {
     required this.trip,
     required this.seats,
     this.status = 'requested',
+    this.paymentStatus = 'unpaid',
+    this.driverMomo,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
@@ -120,6 +122,10 @@ class Booking {
     trip: Trip.fromApi(Map<String, dynamic>.from(json['trip'] as Map)),
     seats: (json['seats'] as num? ?? 1).toInt(),
     status: json['status'] as String? ?? 'requested',
+    paymentStatus: json['paymentStatus'] as String? ?? 'unpaid',
+    driverMomo: json['driverMomo'] is Map
+        ? DriverMomo.fromApi(Map<String, dynamic>.from(json['driverMomo'] as Map))
+        : null,
     createdAt: DateTime.parse(json['createdAt'] as String).toLocal(),
   );
 
@@ -127,17 +133,51 @@ class Booking {
   final Trip trip;
   final int seats;
   final String status;
+
+  /// `unpaid` / `passenger_marked_paid` / `driver_confirmed_received`. This
+  /// is a self-reported status only — YɛnKɔ never verifies a direct mobile
+  /// money payment between a passenger and driver. See [DriverMomo].
+  final String paymentStatus;
+
+  /// The driver's mobile money payout number, present only once this
+  /// booking is confirmed. The passenger pays this number directly, outside
+  /// the app (e.g. via USSD or the network's own app); YɛnKɔ never collects
+  /// or moves money itself.
+  final DriverMomo? driverMomo;
   final DateTime createdAt;
 
   int get totalPrice => seats * trip.pricePerSeat;
 
-  Booking copyWith({String? status}) => Booking(
+  Booking copyWith({String? status, String? paymentStatus}) => Booking(
     id: id,
     trip: trip,
     seats: seats,
     status: status ?? this.status,
+    paymentStatus: paymentStatus ?? this.paymentStatus,
+    driverMomo: driverMomo,
     createdAt: createdAt,
   );
+}
+
+/// A driver's self-registered mobile money payout number and network. Never
+/// verified by YɛnKɔ; see [Booking.paymentStatus].
+class DriverMomo {
+  const DriverMomo({required this.momoNumber, required this.momoNetwork});
+
+  factory DriverMomo.fromApi(Map<String, dynamic> json) => DriverMomo(
+    momoNumber: json['momoNumber'] as String,
+    momoNetwork: json['momoNetwork'] as String,
+  );
+
+  final String momoNumber;
+  final String momoNetwork;
+
+  String get networkLabel => switch (momoNetwork) {
+    'mtn' => 'MTN MoMo',
+    'telecel' => 'Telecel Cash',
+    'airteltigo' => 'AirtelTigo Money',
+    _ => momoNetwork,
+  };
 }
 
 class YenkoNotification {

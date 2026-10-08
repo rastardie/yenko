@@ -7,9 +7,19 @@ export class InMemoryTripRepository {
   #reservationsByIdempotencyKey = new Map();
   #reservations = new Map();
   #notifications = [];
+  #momoLookup;
 
-  constructor(seedTrips = []) {
+  /**
+   * [momoLookup] is an optional `(driverId) => { momoNumber, momoNetwork } | null`
+   * function, used only to surface a driver's payout number on a confirmed
+   * booking (mirrors the SQL join the Postgres repository does against
+   * `users.momo_number`). Omitted in the mock-mode/trip-only test paths that
+   * never touch payments; required only where a caller also has a user
+   * repository to look the driver up in (see test/momo-payment.test.js).
+   */
+  constructor(seedTrips = [], { momoLookup } = {}) {
     for (const trip of seedTrips) this.#trips.set(trip.id, copy(trip));
+    this.#momoLookup = momoLookup ?? (() => null);
   }
 
   async listOpen({ womenOnly = false } = {}) {
@@ -50,6 +60,7 @@ export class InMemoryTripRepository {
       passengerId,
       seats,
       status: 'requested',
+      paymentStatus: 'unpaid',
       createdAt: new Date().toISOString(),
     };
     this.#reservationsByIdempotencyKey.set(key, reservation);
@@ -109,7 +120,15 @@ export class InMemoryTripRepository {
     return [...this.#reservations.values()]
       .filter((reservation) => reservation.passengerId === passengerId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .map((reservation) => ({ ...copy(reservation), trip: copy(this.#trips.get(reservation.tripId)) }));
+      .map((reservation) => {
+        const trip = this.#trips.get(reservation.tripId);
+        const momo = reservation.status === 'confirmed' ? this.#momoLookup(trip?.driver.id) : null;
+        return {
+          ...copy(reservation),
+          trip: copy(trip),
+          ...(momo ? { driverMomo: momo } : {}),
+        };
+      });
   }
 
   async listNotifications({ recipientId }) {
@@ -204,6 +223,70 @@ export class InMemoryTripRepository {
       type: 'reservation.declined',
       title: 'Seat request declined',
       body: `Your ${reservation.seats} seat request for ${trip.from} to ${trip.to} was declined by the driver.`,
+      tripId: trip.id,
+      reservationId,
+    });
+    return { reservation: copy(reservation), replayed: false };
+  }
+
+  /** Confirmed reservations across every trip this driver owns. */
+  async listDriverConfirmedReservations({ driverId }) {
+    const ownTripIds = new Set(
+      [...this.#trips.values()].filter((trip) => trip.driver.id === driverId).map((trip) => trip.id),
+    );
+    return [...this.#reservations.values()]
+      .filter((reservation) => reservation.status === 'confirmed' && ownTripIds.has(reservation.tripId))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((reservation) => ({ ...copy(reservation), trip: copy(this.#trips.get(reservation.tripId)) }));
+  }
+
+  /**
+   * Passenger self-reports having sent mobile money payment directly to the
+   * driver, outside the app. Not verified against any provider.
+   */
+  async markPaymentSent({ reservationId, passengerId }) {
+    const reservation = this.#reservations.get(reservationId);
+    if (!reservation || reservation.passengerId !== passengerId) {
+      return { reason: 'reservation_not_found' };
+    }
+    if (['passenger_marked_paid', 'driver_confirmed_received'].includes(reservation.paymentStatus)) {
+      return { reservation: copy(reservation), replayed: true };
+    }
+    if (reservation.status !== 'confirmed') return { reason: 'reservation_not_confirmed' };
+
+    reservation.paymentStatus = 'passenger_marked_paid';
+    const trip = this.#trips.get(reservation.tripId);
+    this.#createNotification({
+      recipientId: trip.driver.id,
+      type: 'driver.payment.marked_sent',
+      title: 'Passenger marked payment sent',
+      body: `A passenger says they paid for ${reservation.seats} seat on ${trip.from} to ${trip.to}. Confirm once you've received it.`,
+      tripId: trip.id,
+      reservationId,
+    });
+    return { reservation: copy(reservation), replayed: false };
+  }
+
+  /**
+   * Driver self-reports having received the passenger's direct mobile money
+   * payment. Not verified against any provider.
+   */
+  async markPaymentReceived({ reservationId, driverId }) {
+    const reservation = this.#reservations.get(reservationId);
+    if (!reservation) return { reason: 'reservation_not_found' };
+    const trip = this.#trips.get(reservation.tripId);
+    if (!trip || trip.driver.id !== driverId) return { reason: 'reservation_not_found' };
+    if (reservation.paymentStatus === 'driver_confirmed_received') {
+      return { reservation: copy(reservation), replayed: true };
+    }
+    if (reservation.status !== 'confirmed') return { reason: 'reservation_not_confirmed' };
+
+    reservation.paymentStatus = 'driver_confirmed_received';
+    this.#createNotification({
+      recipientId: reservation.passengerId,
+      type: 'reservation.payment_confirmed',
+      title: 'Payment confirmed',
+      body: `The driver confirmed receiving your payment for ${reservation.seats} seat on ${trip.from} to ${trip.to}.`,
       tripId: trip.id,
       reservationId,
     });

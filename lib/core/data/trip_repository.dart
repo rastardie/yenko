@@ -38,6 +38,31 @@ abstract interface class TripRepository implements Listenable {
   /// if the booking cannot be declined.
   Future<void> declineReservation(Booking booking);
 
+  /// Confirmed bookings across every trip the signed-in driver owns, for
+  /// following up on direct mobile money payment. Empty for passengers.
+  List<Booking> get confirmedDriverReservations;
+
+  /// The signed-in driver's own mobile money payout number, or null if not
+  /// yet set. Null for passengers.
+  DriverMomo? get myMomoDetails;
+
+  /// Sets or clears the signed-in driver's mobile money payout number.
+  /// Passing null for both arguments clears it. Throws [StateError] if the
+  /// signed-in account is not a driver or the number fails validation.
+  Future<void> setMomoDetails({String? momoNumber, String? momoNetwork});
+
+  /// Passenger self-reports having sent mobile money payment directly to
+  /// the driver for this confirmed booking, outside the app. Not verified
+  /// by YɛnKɔ. Throws [StateError] if the booking is not the caller's own
+  /// confirmed booking.
+  Future<void> markPaymentSent(Booking booking);
+
+  /// Driver self-reports having received the passenger's direct mobile
+  /// money payment for this confirmed booking. Not verified by YɛnKɔ.
+  /// Throws [StateError] if the booking is not on one of the caller's own
+  /// trips, or is not confirmed.
+  Future<void> markPaymentReceived(Booking booking);
+
   Future<void> markNotificationsRead();
 }
 
@@ -81,6 +106,7 @@ class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
   final List<Trip> _trips;
   final List<Booking> _bookings = [];
   final List<YenkoNotification> _notifications = [];
+  DriverMomo? _myMomo;
 
   @override
   List<Trip> get trips => List.unmodifiable(_trips);
@@ -121,6 +147,17 @@ class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
   @override
   Booking? get activeBooking =>
       _bookings.where((booking) => booking.status == 'requested').firstOrNull;
+
+  @override
+  List<Booking> get confirmedDriverReservations => _bookings
+      .where(
+        (booking) =>
+            booking.status == 'confirmed' && booking.trip.driverName == 'You',
+      )
+      .toList(growable: false);
+
+  @override
+  DriverMomo? get myMomoDetails => _myMomo;
 
   @override
   Future<void> initialize() async {}
@@ -186,7 +223,18 @@ class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
     if (bookingIndex < 0 || _bookings[bookingIndex].status != 'requested') {
       throw StateError('Only a pending seat request can be confirmed.');
     }
-    _bookings[bookingIndex] = booking.copyWith(status: 'confirmed');
+    final confirmed = booking.copyWith(status: 'confirmed');
+    _bookings[bookingIndex] = _myMomo == null
+        ? confirmed
+        : Booking(
+            id: confirmed.id,
+            trip: confirmed.trip,
+            seats: confirmed.seats,
+            status: confirmed.status,
+            paymentStatus: confirmed.paymentStatus,
+            driverMomo: _myMomo,
+            createdAt: confirmed.createdAt,
+          );
     notifyListeners();
   }
 
@@ -203,6 +251,50 @@ class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
       );
     }
     _bookings[bookingIndex] = booking.copyWith(status: 'cancelled');
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setMomoDetails({String? momoNumber, String? momoNetwork}) async {
+    if (momoNumber == null && momoNetwork == null) {
+      _myMomo = null;
+      notifyListeners();
+      return;
+    }
+    if (momoNumber == null ||
+        !RegExp(r'^\+?[0-9]{9,15}$').hasMatch(momoNumber)) {
+      throw StateError('Enter a valid mobile money number (9-15 digits).');
+    }
+    if (!{'mtn', 'telecel', 'airteltigo'}.contains(momoNetwork)) {
+      throw StateError('Choose a mobile money network.');
+    }
+    _myMomo = DriverMomo(momoNumber: momoNumber, momoNetwork: momoNetwork!);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> markPaymentSent(Booking booking) async {
+    final bookingIndex = _bookings.indexWhere((item) => item.id == booking.id);
+    if (bookingIndex < 0 || _bookings[bookingIndex].status != 'confirmed') {
+      throw StateError('Only a confirmed booking can be marked as paid.');
+    }
+    _bookings[bookingIndex] = _bookings[bookingIndex].copyWith(
+      paymentStatus: 'passenger_marked_paid',
+    );
+    notifyListeners();
+  }
+
+  @override
+  Future<void> markPaymentReceived(Booking booking) async {
+    final bookingIndex = _bookings.indexWhere((item) => item.id == booking.id);
+    if (bookingIndex < 0 || _bookings[bookingIndex].status != 'confirmed') {
+      throw StateError(
+        'Only a confirmed booking can be marked as payment received.',
+      );
+    }
+    _bookings[bookingIndex] = _bookings[bookingIndex].copyWith(
+      paymentStatus: 'driver_confirmed_received',
+    );
     notifyListeners();
   }
 

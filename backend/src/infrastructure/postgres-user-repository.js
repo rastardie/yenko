@@ -171,6 +171,18 @@ export class PostgresUserRepository {
     await this.pool.query('UPDATE users SET phone_verified = true WHERE id = $1', [userId]);
   }
 
+  /**
+   * Sets or clears the mobile money payout number a driver's confirmed
+   * passengers should pay directly (outside the app — see migration 011).
+   * Passing null for both clears the registration.
+   */
+  async setMomoDetails(userId, { momoNumber, momoNetwork }) {
+    await this.pool.query(
+      `UPDATE users SET momo_number = $2, momo_network = $3, updated_at = now() WHERE id = $1`,
+      [userId, momoNumber ?? null, momoNetwork ?? null],
+    );
+  }
+
   async bumpAuthVersion(userId) {
     await this.pool.query('UPDATE users SET auth_version = auth_version + 1 WHERE id = $1', [userId]);
   }

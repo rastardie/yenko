@@ -130,6 +130,21 @@ export function createHttpServer({ tripService, actorResolver, authService, admi
           },
         }, requestId);
       }
+      if (authService && request.method === 'GET' && url.pathname === '/v1/me/momo') {
+        const actor = await actorResolver.resolve(request.headers);
+        const result = await authService.getMomoDetails({ userId: actor.subject });
+        return sendJson(response, 200, { data: result }, requestId);
+      }
+      if (authService && request.method === 'PUT' && url.pathname === '/v1/me/momo') {
+        const actor = await actorResolver.resolve(request.headers);
+        const body = await readJson(request);
+        const result = await authService.setMomoDetails({
+          userId: actor.subject,
+          momoNumber: body.momoNumber ?? null,
+          momoNetwork: body.momoNetwork ?? null,
+        });
+        return sendJson(response, 200, { data: result }, requestId);
+      }
       if (adminService && url.pathname.startsWith('/v1/admin/')) {
         const resolved = await actorResolver.resolve(request.headers);
         // A valid x-admin-action token (see /v1/auth/admin-action-token) marks
@@ -206,6 +221,33 @@ export function createHttpServer({ tripService, actorResolver, authService, admi
         const result = await tripService.declineReservation({
           actor,
           reservationId: decodeURIComponent(driverDeclineMatch[1]),
+        });
+        return sendJson(response, 200, {
+          data: { ...result.reservation, idempotentReplay: result.replayed },
+        }, requestId);
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/driver/reservations/confirmed') {
+        const actor = await actorResolver.resolve(request.headers);
+        const reservations = await tripService.listDriverConfirmedReservations({ actor });
+        return sendJson(response, 200, { data: reservations }, requestId);
+      }
+      const markPaidMatch = url.pathname.match(/^\/v1\/me\/reservations\/([^/]+)\/mark-paid$/);
+      if (request.method === 'POST' && markPaidMatch) {
+        const actor = await actorResolver.resolve(request.headers);
+        const result = await tripService.markPaymentSent({
+          actor,
+          reservationId: decodeURIComponent(markPaidMatch[1]),
+        });
+        return sendJson(response, 200, {
+          data: { ...result.reservation, idempotentReplay: result.replayed },
+        }, requestId);
+      }
+      const markReceivedMatch = url.pathname.match(/^\/v1\/driver\/reservations\/([^/]+)\/mark-received$/);
+      if (request.method === 'POST' && markReceivedMatch) {
+        const actor = await actorResolver.resolve(request.headers);
+        const result = await tripService.markPaymentReceived({
+          actor,
+          reservationId: decodeURIComponent(markReceivedMatch[1]),
         });
         return sendJson(response, 200, {
           data: { ...result.reservation, idempotentReplay: result.replayed },

@@ -57,6 +57,12 @@ export const isValidLegalNamePart = (value) =>
 /** Supported social providers (email/password is handled separately). */
 export const socialProviders = Object.freeze(['google', 'apple', 'facebook', 'twitter']);
 
+/** Ghanaian mobile money networks a driver may register a payout number for. */
+export const momoNetworks = Object.freeze(['mtn', 'telecel', 'airteltigo']);
+
+export const isValidMomoNumber = (value) =>
+  typeof value === 'string' && /^\+?[0-9]{9,15}$/.test(value);
+
 
 /** Permission keys are `resource:action`, e.g. `users:read`. */
 export const permissionKey = (resource, action) => `${resource}:${action}`;

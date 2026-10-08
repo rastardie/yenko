@@ -68,8 +68,20 @@ function toBooking(row) {
     tripId: row.trip_id,
     seats: row.seats,
     status: row.status,
+    paymentStatus: row.payment_status,
     createdAt: new Date(row.created_at).toISOString(),
     trip: row.trip,
+    // Only surfaced once a seat is confirmed — otherwise a browsing
+    // passenger (whose request has not been accepted) would see where to
+    // pay before the driver has agreed to take them. See migration 011.
+    ...(row.status === 'confirmed' && row.driver_momo_number
+      ? {
+          driverMomo: {
+            momoNumber: row.driver_momo_number,
+            momoNetwork: row.driver_momo_network,
+          },
+        }
+      : {}),
   };
 }
 
@@ -193,7 +205,7 @@ export class PostgresTripRepository {
     try {
       await client.query('BEGIN');
       const replay = await client.query(
-        `SELECT r.id, r.trip_id, r.seats, r.status, r.created_at
+        `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.created_at
          FROM idempotency_keys i JOIN reservations r ON r.id = i.reservation_id
          WHERE i.actor_id = $1 AND i.route = $2 AND i.key = $3`,
         [passengerId, route, idempotencyKey],
@@ -227,7 +239,7 @@ export class PostgresTripRepository {
       const reservationResult = await client.query(
         `INSERT INTO reservations (id, trip_id, passenger_id, seats, status)
          VALUES ($1, $2, $3, $4, 'requested')
-         RETURNING id, trip_id, seats, status, created_at`,
+         RETURNING id, trip_id, seats, status, payment_status, created_at`,
         [reservationId, tripId, passengerId, seats],
       );
       await client.query('UPDATE trips SET seats_available = seats_available - $1, updated_at = now() WHERE id = $2', [seats, tripId]);
@@ -277,7 +289,7 @@ export class PostgresTripRepository {
     try {
       await client.query('BEGIN');
       const lockedReservation = await client.query(
-        `SELECT r.id, r.trip_id, r.passenger_id, r.seats, r.status, r.created_at,
+        `SELECT r.id, r.trip_id, r.passenger_id, r.seats, r.status, r.payment_status, r.created_at,
                 t.status AS trip_status, t.departure_at, t.driver_id,
                 t.origin_name, t.destination_name
          FROM reservations r
@@ -308,7 +320,7 @@ export class PostgresTripRepository {
       const cancelled = await client.query(
         `UPDATE reservations SET status = 'cancelled', updated_at = now()
          WHERE id = $1
-         RETURNING id, trip_id, seats, status, created_at`,
+         RETURNING id, trip_id, seats, status, payment_status, created_at`,
         [reservationId],
       );
       await client.query(
@@ -353,7 +365,8 @@ export class PostgresTripRepository {
 
   async listBookings({ passengerId }) {
     const { rows } = await this.pool.query(
-      `SELECT r.id, r.trip_id, r.seats, r.status, r.created_at, ${tripJson} AS trip
+      `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.created_at,
+              ${tripJson} AS trip, u.momo_number AS driver_momo_number, u.momo_network AS driver_momo_network
        FROM reservations r
        JOIN trips t ON t.id = r.trip_id
        JOIN users u ON u.id = t.driver_id
@@ -406,11 +419,28 @@ export class PostgresTripRepository {
   /** Pending (status 'requested') reservations across every trip this driver owns. */
   async listDriverPendingReservations({ driverId }) {
     const { rows } = await this.pool.query(
-      `SELECT r.id, r.trip_id, r.seats, r.status, r.created_at, ${tripJson} AS trip
+      `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.created_at, ${tripJson} AS trip
        FROM reservations r
        JOIN trips t ON t.id = r.trip_id
        JOIN users u ON u.id = t.driver_id
        WHERE t.driver_id = $1 AND r.status = 'requested'
+       ORDER BY r.created_at ASC`,
+      [driverId],
+    );
+    return rows.map(toBooking);
+  }
+
+  /**
+   * Confirmed reservations across every trip this driver owns, for showing
+   * which seats are awaiting or have received direct mobile money payment.
+   */
+  async listDriverConfirmedReservations({ driverId }) {
+    const { rows } = await this.pool.query(
+      `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.created_at, ${tripJson} AS trip
+       FROM reservations r
+       JOIN trips t ON t.id = r.trip_id
+       JOIN users u ON u.id = t.driver_id
+       WHERE t.driver_id = $1 AND r.status = 'confirmed'
        ORDER BY r.created_at ASC`,
       [driverId],
     );
@@ -427,7 +457,7 @@ export class PostgresTripRepository {
     try {
       await client.query('BEGIN');
       const locked = await client.query(
-        `SELECT r.id, r.trip_id, r.seats, r.status, r.passenger_id, r.created_at,
+        `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.passenger_id, r.created_at,
                 t.status AS trip_status, t.driver_id, t.origin_name, t.destination_name
          FROM reservations r JOIN trips t ON t.id = r.trip_id
          WHERE r.id = $1 FOR UPDATE OF r, t`,
@@ -450,7 +480,7 @@ export class PostgresTripRepository {
       const confirmed = await client.query(
         `UPDATE reservations SET status = 'confirmed', updated_at = now()
          WHERE id = $1
-         RETURNING id, trip_id, seats, status, created_at`,
+         RETURNING id, trip_id, seats, status, payment_status, created_at`,
         [reservationId],
       );
       await createNotification(client, {
@@ -491,7 +521,7 @@ export class PostgresTripRepository {
     try {
       await client.query('BEGIN');
       const locked = await client.query(
-        `SELECT r.id, r.trip_id, r.seats, r.status, r.passenger_id, r.created_at,
+        `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.passenger_id, r.created_at,
                 t.driver_id, t.origin_name, t.destination_name
          FROM reservations r JOIN trips t ON t.id = r.trip_id
          WHERE r.id = $1 FOR UPDATE OF r, t`,
@@ -514,7 +544,7 @@ export class PostgresTripRepository {
       const declined = await client.query(
         `UPDATE reservations SET status = 'cancelled', updated_at = now()
          WHERE id = $1
-         RETURNING id, trip_id, seats, status, created_at`,
+         RETURNING id, trip_id, seats, status, payment_status, created_at`,
         [reservationId],
       );
       await client.query(
@@ -549,12 +579,131 @@ export class PostgresTripRepository {
     }
   }
 
+  /**
+   * Passenger self-reports having sent mobile money payment directly to the
+   * driver, outside the app. Not verified against any provider — see
+   * migration 011. Only allowed on the passenger's own confirmed booking.
+   */
+  async markPaymentSent({ reservationId, passengerId }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.passenger_id, r.created_at,
+                t.driver_id, t.origin_name, t.destination_name
+         FROM reservations r JOIN trips t ON t.id = r.trip_id
+         WHERE r.id = $1 FOR UPDATE OF r`,
+        [reservationId],
+      );
+      if (!locked.rowCount || locked.rows[0].passenger_id !== passengerId) {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_found' };
+      }
+      const reservation = locked.rows[0];
+      if (reservation.payment_status === 'passenger_marked_paid' || reservation.payment_status === 'driver_confirmed_received') {
+        await client.query('COMMIT');
+        return { reservation: this.#toReservation(reservation), replayed: true };
+      }
+      if (reservation.status !== 'confirmed') {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_confirmed' };
+      }
+
+      const updated = await client.query(
+        `UPDATE reservations SET payment_status = 'passenger_marked_paid', updated_at = now()
+         WHERE id = $1
+         RETURNING id, trip_id, seats, status, payment_status, created_at`,
+        [reservationId],
+      );
+      await createNotification(client, {
+        recipientId: reservation.driver_id,
+        type: 'driver.payment.marked_sent',
+        title: 'Passenger marked payment sent',
+        body: `A passenger says they paid for ${reservation.seats} seat on ${reservation.origin_name} to ${reservation.destination_name}. Confirm once you've received it.`,
+        tripId: reservation.trip_id,
+        reservationId,
+      });
+      await client.query(
+        `INSERT INTO audit_events (actor_id, action, aggregate_type, aggregate_id, metadata)
+         VALUES ($1, 'reservation.payment_marked_sent', 'reservation', $2, $3::jsonb)`,
+        [passengerId, reservationId, JSON.stringify({ tripId: reservation.trip_id })],
+      );
+      await client.query('COMMIT');
+      return { reservation: this.#toReservation(updated.rows[0]), replayed: false };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Driver self-reports having received the passenger's direct mobile money
+   * payment. Not verified against any provider. Only allowed on one of the
+   * driver's own confirmed bookings.
+   */
+  async markPaymentReceived({ reservationId, driverId }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT r.id, r.trip_id, r.seats, r.status, r.payment_status, r.passenger_id, r.created_at,
+                t.driver_id, t.origin_name, t.destination_name
+         FROM reservations r JOIN trips t ON t.id = r.trip_id
+         WHERE r.id = $1 FOR UPDATE OF r`,
+        [reservationId],
+      );
+      if (!locked.rowCount || locked.rows[0].driver_id !== driverId) {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_found' };
+      }
+      const reservation = locked.rows[0];
+      if (reservation.payment_status === 'driver_confirmed_received') {
+        await client.query('COMMIT');
+        return { reservation: this.#toReservation(reservation), replayed: true };
+      }
+      if (reservation.status !== 'confirmed') {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_confirmed' };
+      }
+
+      const updated = await client.query(
+        `UPDATE reservations SET payment_status = 'driver_confirmed_received', updated_at = now()
+         WHERE id = $1
+         RETURNING id, trip_id, seats, status, payment_status, created_at`,
+        [reservationId],
+      );
+      await createNotification(client, {
+        recipientId: reservation.passenger_id,
+        type: 'reservation.payment_confirmed',
+        title: 'Payment confirmed',
+        body: `The driver confirmed receiving your payment for ${reservation.seats} seat on ${reservation.origin_name} to ${reservation.destination_name}.`,
+        tripId: reservation.trip_id,
+        reservationId,
+      });
+      await client.query(
+        `INSERT INTO audit_events (actor_id, action, aggregate_type, aggregate_id, metadata)
+         VALUES ($1, 'reservation.payment_confirmed_received', 'reservation', $2, $3::jsonb)`,
+        [driverId, reservationId, JSON.stringify({ tripId: reservation.trip_id })],
+      );
+      await client.query('COMMIT');
+      return { reservation: this.#toReservation(updated.rows[0]), replayed: false };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   #toReservation(row) {
     return clone({
       id: row.id,
       tripId: row.trip_id,
       seats: row.seats,
       status: row.status,
+      paymentStatus: row.payment_status,
       createdAt: new Date(row.created_at).toISOString(),
     });
   }

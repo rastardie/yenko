@@ -321,6 +321,52 @@ The reservations schema (`001_initial.sql`) already had `requested`/`confirmed`/
 - No UI anywhere shows a passenger their booking is specifically "awaiting driver approval" vs. "confirmed" with different visual treatment — ~~`trip_tracking_screen.dart`'s `_BookingCard` still only distinguishes...~~ **Fixed in this same session, same commit:** `_BookingCard` now shows three distinct states — "Awaiting driver" (requested, green), "Confirmed" (confirmed, green), "Cancelled" (anything else, gray) — instead of the binary requested/cancelled treatment that would have mislabeled a newly-confirmed booking as cancelled. The "Cancel ride" and "View" buttons remain gated on `requested` only, unchanged, since the backend only allows a passenger to self-cancel a still-pending request.
 - Still no payments, so "confirm" has no monetary meaning yet — it is purely a status change.
 
+## 2026-10-08 session (continued again) — direct driver-to-passenger mobile money payment
+
+### Explicit model, chosen by the user, not inferred
+
+There is **no platform-held wallet or payment processor integration**. A passenger pays the driver's mobile money number **directly**, outside the app (e.g. via USSD or the network's own app), then **both sides self-report** the outcome in YɛnKɔ:
+- Passenger marks "I've paid" after sending money.
+- Driver marks "I've received this payment" after checking their own MoMo balance/SMS.
+
+**Neither report is verified against any provider.** This has no fraud protection by design — a passenger could falsely mark paid, or a driver could deny a real payment, and the app cannot tell. This tradeoff was explicitly chosen (no central payment collection) rather than discovered as a limitation; it is the correct scope for this stage, not a shortcut.
+
+This was deliberately *not* built as even a partial/fake integration with a real payment processor (Paystack, MTN MoMo direct, etc.) since that would require a merchant account, API credentials, and a public webhook endpoint — none of which exist, and faking any part of that would be actively misleading about what the app does with money.
+
+### Schema (migration 011)
+
+- `users.momo_number`, `users.momo_network` (`mtn`/`telecel`/`airteltigo`) — a driver's own payout number, self-registered, never verified.
+- `reservations.payment_status` (`unpaid` default / `passenger_marked_paid` / `driver_confirmed_received`) — independent of `reservations.status` (`requested`/`confirmed`/`cancelled`), since payment and seat-confirmation are different lifecycles that happen to usually follow each other.
+- Two new permissions, granted by default to the existing system groups rather than overloading `view_own`/`cancel_own`/`manage_own` (those are semantically about viewing/cancelling/managing, not payment reporting): `reservations:report_payment` (Riders) and `trips:confirm_payment` (Drivers).
+
+### Backend
+
+- `user.js`: `momoNetworks`, `isValidMomoNumber`.
+- `postgres-user-repository.js` + in-memory fixture: `setMomoDetails`.
+- `auth-service.js`: `setMomoDetails` (role-checked driver-only via `rolesForUser`, not just the primary role, since a multi-role account could technically also be a passenger), `getMomoDetails`.
+- `http-server.js`: `GET`/`PUT /v1/me/momo`.
+- `postgres-trip-repository.js` / `in-memory-trip-repository.js`: `payment_status` threaded through **every** reservation read and write path (this took several passes to get right — the column needed adding to every `SELECT`/`RETURNING` clause that ultimately feeds `#toReservation`, not just the new ones). Added `listDriverConfirmedReservations`, `markPaymentSent` (passenger-owned-booking check), `markPaymentReceived` (driver-owned-trip check). A confirmed booking's response carries the driver's `momoNumber`/`momoNetwork` **only when `status === 'confirmed'`** — deliberately not exposed on open/pending trips, so a browsing or not-yet-accepted passenger can't see where to pay before the driver has actually agreed to take them.
+- `trip-service.js`: `listDriverConfirmedReservations`, `markPaymentSent` (requires `passenger` role + `reservations:report_payment`), `markPaymentReceived` (requires `driver` role + `trips:confirm_payment`). `toBookingResponse` now passes through `paymentStatus` and `driverMomo` — this was a real bug caught by the first attempt at an integration test (the repository returned the data correctly, but the service-layer DTO mapper was silently dropping both fields).
+- `http-server.js`: `GET /v1/driver/reservations/confirmed`, `POST /v1/me/reservations/:id/mark-paid`, `POST /v1/driver/reservations/:id/mark-received`.
+- **Test infrastructure gap found and fixed**: the existing `api.test.js` harness (`DevelopmentActorResolver`, header-based dev actors) has no `AuthService` at all, so it structurally cannot exercise `/v1/me/momo` or anything else that depends on real user accounts. Wrote a new `backend/test/momo-payment.test.js` with its own full in-memory stack (`InMemoryUserRepository` + `InMemoryTripRepository` + real `AuthService` + `LocalAuthActorResolver`, no Postgres) — the first test file in this repo to combine all of those without a real database. Also found and fixed that the shared `InMemoryUserRepository` test fixture's seeded `Riders`/`Drivers` groups had **empty permission lists**, unlike the real migration 009 defaults, which silently passed for every prior test only because none of them exercised `TripService`'s permission checks through a real signed-up account; now seeded to match production defaults.
+- All 51 backend tests pass (`npm run check`), including: registering/clearing a payout number, rejecting an invalid number, a non-driver being refused (403), the full confirm→mark-paid→mark-received happy path, idempotent replay of mark-paid, and — the properly load-bearing test — **neither a different passenger nor a different driver can self-report payment on someone else's booking** (404 both ways).
+
+### Flutter
+
+- `Booking` gained `paymentStatus` (default `unpaid`) and `driverMomo` (`DriverMomo?`, null until confirmed); new `DriverMomo` value type with a `networkLabel` getter for display ("MTN MoMo" etc.).
+- `TripRepository` interface gained `confirmedDriverReservations`, `myMomoDetails`, `setMomoDetails`, `markPaymentSent`, `markPaymentReceived`, implemented in both `InMemoryTripRepository` and `LocalApiTripRepository`. The in-memory repository's `confirmReservation` now attaches the signed-in mock driver's own `_myMomo` onto a freshly confirmed booking, since mock mode has no separate user-lookup concept.
+- `ProfileScreen`: new `_MomoPayoutCard` in the driver-mode section — view/edit/clear a payout number with network selection (MTN/Telecel/AirtelTigo chips), inline validation errors surfaced via `StateError` → `SnackBar`, consistent with every other form in this app.
+- `trip_tracking_screen.dart`: new `_PaymentSection`, shown on a confirmed booking only when `driverMomo != null` — shows "Pay {network} {number} directly", an explicit "YɛnKɔ does not collect this payment" disclaimer, and an "I've paid" button that transitions through `unpaid` → `passenger_marked_paid` → (driver confirms) → `driver_confirmed_received`, with distinct copy at each state.
+- `driver_home_screen.dart`: new "Payments to confirm" section (only rendered when a confirmed booking's payment isn't yet `driver_confirmed_received`), each card showing whether the passenger has self-reported paying yet, with an "I've received this payment" action. Class doc comment updated — it previously said "no accept/decline queue" from an earlier point in this same session, which was already stale after that feature shipped.
+- Tests: `widget_test.dart` gained repository-level tests for `setMomoDetails` validation and the full confirm→payment-self-report state machine; `admin_test.dart` gained a widget-level test that renders the real driver dashboard, taps "I've received this payment", and asserts the section disappears and `paymentStatus` updates. 45/45 Flutter tests pass; `flutter analyze` clean.
+
+### Explicit non-goals / still open
+
+- No real payment verification of any kind — restated because it is the single most important thing to not lose track of about this feature. If real money handling is wanted later, that is a materially different, much larger piece of work (merchant account, processor integration, webhook, settlement) — not an upgrade of this flow.
+- No dispute resolution UI if the two sides disagree (passenger says paid, driver says not received, or vice versa) — the data model can represent the disagreement (`payment_status` just stops advancing), but nothing surfaces it as a flagged case anywhere, including the admin console.
+- A driver can have at most one payout number for all their trips (no per-trip override) — matches how real drivers actually operate (one personal MoMo line), not flagged as a gap.
+- `markPaymentSent`/`markPaymentReceived` have no time limit — a booking's payment can be self-reported at any point after confirmation, with no reminder or expiry.
+
 
 ## Suggested future-session prompt
 

@@ -1166,4 +1166,56 @@ void main() {
       expect(repository.bookings.single.status, 'confirmed');
     },
   );
+
+  testWidgets(
+    'a driver can confirm receiving a direct mobile money payment from the dashboard',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final repository = InMemoryTripRepository();
+      await repository.initialize();
+      await repository.setMomoDetails(
+        momoNumber: '+233244000111',
+        momoNetwork: 'mtn',
+      );
+      await repository.postTrip(
+        from: 'East Legon',
+        to: 'Circle',
+        pickupJunction: '37 Station',
+        seats: 2,
+        pricePerSeat: 20,
+        womenOnly: false,
+      );
+      await repository.requestSeat(repository.trips.first);
+      await repository.confirmReservation(
+        repository.pendingDriverReservations.single,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: YenkoRootScreen(
+            repository: repository,
+            session: _session(role: 'driver'),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Payments to confirm'), findsOneWidget);
+      expect(find.text("I've received this payment"), findsOneWidget);
+
+      await tester.ensureVisible(find.text("I've received this payment"));
+      await tester.tap(find.text("I've received this payment"));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Payments to confirm'), findsNothing);
+      expect(
+        repository.bookings.single.paymentStatus,
+        'driver_confirmed_received',
+      );
+    },
+  );
 }

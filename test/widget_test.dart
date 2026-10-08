@@ -87,4 +87,62 @@ void main() {
       );
     },
   );
+
+  test('setMomoDetails rejects an invalid number and accepts a valid one', () async {
+    final repository = InMemoryTripRepository();
+    await expectLater(
+      repository.setMomoDetails(momoNumber: 'not-a-number', momoNetwork: 'mtn'),
+      throwsStateError,
+    );
+    expect(repository.myMomoDetails, isNull);
+
+    await repository.setMomoDetails(
+      momoNumber: '+233244000111',
+      momoNetwork: 'mtn',
+    );
+    expect(repository.myMomoDetails!.momoNumber, '+233244000111');
+    expect(repository.myMomoDetails!.networkLabel, 'MTN MoMo');
+
+    await repository.setMomoDetails();
+    expect(repository.myMomoDetails, isNull);
+  });
+
+  test(
+    'a confirmed booking carries the driver momo and both sides can self-report payment',
+    () async {
+      final repository = InMemoryTripRepository();
+      await repository.setMomoDetails(
+        momoNumber: '+233244000111',
+        momoNetwork: 'mtn',
+      );
+      await repository.postTrip(
+        from: 'East Legon',
+        to: 'Circle',
+        pickupJunction: '37 Station',
+        seats: 2,
+        pricePerSeat: 20,
+        womenOnly: false,
+      );
+      final ownTrip = repository.trips.first;
+      await repository.requestSeat(ownTrip);
+      final pending = repository.pendingDriverReservations.single;
+
+      await repository.confirmReservation(pending);
+      final confirmed = repository.bookings.single;
+      expect(confirmed.status, 'confirmed');
+      expect(confirmed.paymentStatus, 'unpaid');
+      expect(confirmed.driverMomo?.momoNumber, '+233244000111');
+
+      await expectLater(
+        repository.markPaymentReceived(confirmed),
+        completes,
+      );
+      expect(repository.bookings.single.paymentStatus, 'driver_confirmed_received');
+
+      await expectLater(
+        repository.markPaymentSent(repository.bookings.single),
+        completes,
+      );
+    },
+  );
 }

@@ -11,7 +11,7 @@ import {
   tooManyAttempts,
   unauthorized,
 } from '../domain/errors.js';
-import { isValidPhone, isValidPin, isValidUsername, isValidEmail, isValidLegalNamePart, socialProviders, primaryRole } from '../domain/user.js';
+import { isValidPhone, isValidPin, isValidUsername, isValidEmail, isValidLegalNamePart, socialProviders, primaryRole, isValidMomoNumber, momoNetworks } from '../domain/user.js';
 
 const bcryptCost = 10;
 const sessionTtlHours = 12;
@@ -445,6 +445,38 @@ export class AuthService {
 
   async logout(sessionId) {
     if (sessionId) await this.users.revokeSession(sessionId);
+  }
+
+  /**
+   * Sets or clears the driver's own mobile money payout number. This is a
+   * self-reported field only: YɛnKɔ never verifies it is a real, working
+   * mobile money account, and no money moves through the app or this
+   * backend — a confirmed passenger pays this number directly, outside the
+   * app. See migration 011 and HANDOVER.md.
+   */
+  async setMomoDetails({ userId, momoNumber, momoNetwork }) {
+    const roles = await this.users.rolesForUser(userId);
+    if (!roles.includes('driver')) {
+      throw forbidden('Only a driver account can register a payout number.');
+    }
+    if (momoNumber === null && momoNetwork === null) {
+      await this.users.setMomoDetails(userId, { momoNumber: null, momoNetwork: null });
+      return { momoNumber: null, momoNetwork: null };
+    }
+    if (!isValidMomoNumber(momoNumber)) {
+      throw badRequest('momoNumber must be 9-15 digits, optionally starting with +.');
+    }
+    if (!momoNetworks.includes(momoNetwork)) {
+      throw badRequest(`momoNetwork must be one of: ${momoNetworks.join(', ')}.`);
+    }
+    await this.users.setMomoDetails(userId, { momoNumber, momoNetwork });
+    return { momoNumber, momoNetwork };
+  }
+
+  async getMomoDetails({ userId }) {
+    const user = await this.users.findById(userId);
+    if (!user) throw unauthorized('Account not found.');
+    return { momoNumber: user.momo_number ?? null, momoNetwork: user.momo_network ?? null };
   }
 
   /** Verifies a bearer access token and returns the actor shape the trip service expects. */

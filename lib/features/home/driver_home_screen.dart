@@ -10,12 +10,10 @@ import 'passenger_home_screen.dart' show firstNameOf;
 
 /// The driver-facing home/dashboard screen. Shown instead of
 /// [PassengerHomeScreen] when the signed-in account's primary role is
-/// `driver`. Scoped to what [TripRepository] already exposes today: the
-/// driver's own posted trips and how many seats are booked against each
-/// (`driverTripSummaries`). There is deliberately no accept/decline queue
-/// here — the repository has no concept of a pending-approval booking state
-/// yet (`requestSeat` reserves a seat immediately), so a request queue would
-/// need a model + backend change first. See HANDOVER.md, 2026-10-08 session.
+/// `driver`. Surfaces the driver's own posted trips (`driverTripSummaries`),
+/// pending seat requests to accept/decline (`pendingDriverReservations`),
+/// and confirmed bookings awaiting direct mobile money payment
+/// (`confirmedDriverReservations`). See HANDOVER.md, 2026-10-08 session.
 class DriverHomeScreen extends StatefulWidget {
   const DriverHomeScreen({
     super.key,
@@ -67,6 +65,9 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     builder: (context, _) {
       final summaries = widget.repository.driverTripSummaries;
       final pending = widget.repository.pendingDriverReservations;
+      final awaitingPayment = widget.repository.confirmedDriverReservations
+          .where((booking) => booking.paymentStatus != 'driver_confirmed_received')
+          .toList();
       final activeSummaries = summaries
           .where(
             (summary) =>
@@ -216,6 +217,25 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                       context,
                       action: widget.repository.declineReservation(booking),
                       successMessage: 'Seat request declined.',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                const SizedBox(height: 10),
+              ],
+              if (awaitingPayment.isNotEmpty) ...[
+                const Text(
+                  'Payments to confirm',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
+                ),
+                const SizedBox(height: 10),
+                for (final booking in awaitingPayment) ...[
+                  _PaymentToConfirmCard(
+                    booking: booking,
+                    onMarkReceived: () => _respond(
+                      context,
+                      action: widget.repository.markPaymentReceived(booking),
+                      successMessage: 'Payment confirmed as received.',
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -455,6 +475,82 @@ class _SeatRequestCard extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A confirmed booking awaiting the driver's "payment received"
+/// confirmation. The passenger pays this driver's mobile money number
+/// directly, outside the app — this card only lets the driver self-report
+/// the outcome; nothing here verifies a real transaction. See
+/// [TripRepository.markPaymentReceived] and HANDOVER.md.
+class _PaymentToConfirmCard extends StatelessWidget {
+  const _PaymentToConfirmCard({
+    required this.booking,
+    required this.onMarkReceived,
+  });
+  final Booking booking;
+  final VoidCallback onMarkReceived;
+
+  @override
+  Widget build(BuildContext context) {
+    final trip = booking.trip;
+    final passengerMarkedPaid = booking.paymentStatus == 'passenger_marked_paid';
+    return YenkoShowcaseCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${trip.from}  →  ${trip.to}',
+                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
+                ),
+              ),
+              Text(
+                '${booking.seats} seat · GH₵ ${booking.totalPrice}',
+                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: passengerMarkedPaid
+                  ? const Color(0xFFDDF8EA)
+                  : const Color(0xFFFFF5D8),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              passengerMarkedPaid
+                  ? 'Passenger says they paid'
+                  : 'Waiting for passenger to pay',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                color: passengerMarkedPaid
+                    ? const Color(0xFF14744A)
+                    : YenkoColors.charcoal,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: onMarkReceived,
+              icon: const Icon(Icons.check_circle_outline_rounded, size: 17),
+              label: const Text("I've received this payment"),
+              style: FilledButton.styleFrom(
+                backgroundColor: YenkoColors.green,
+                foregroundColor: Colors.white,
+              ),
+            ),
           ),
         ],
       ),

@@ -177,6 +177,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             const SizedBox(height: 18),
             if (_driverMode) ...[
+              _MomoPayoutCard(repository: widget.repository),
+              const SizedBox(height: 12),
               const Text(
                 'Driver overview',
                 style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
@@ -399,4 +401,172 @@ class _ProfileAction extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Lets a driver register (or clear) the mobile money number their
+/// confirmed passengers should pay directly, outside the app. YɛnKɔ never
+/// verifies this number or moves any money itself — see
+/// [TripRepository.setMomoDetails] and HANDOVER.md.
+class _MomoPayoutCard extends StatefulWidget {
+  const _MomoPayoutCard({required this.repository});
+  final TripRepository repository;
+
+  @override
+  State<_MomoPayoutCard> createState() => _MomoPayoutCardState();
+}
+
+class _MomoPayoutCardState extends State<_MomoPayoutCard> {
+  final _numberController = TextEditingController();
+  String? _network;
+  bool _editing = false;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _numberController.dispose();
+    super.dispose();
+  }
+
+  void _startEditing() {
+    final current = widget.repository.myMomoDetails;
+    _numberController.text = current?.momoNumber ?? '';
+    setState(() {
+      _network = current?.momoNetwork;
+      _editing = true;
+    });
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await widget.repository.setMomoDetails(
+        momoNumber: _numberController.text.trim(),
+        momoNetwork: _network,
+      );
+      if (!mounted) return;
+      setState(() => _editing = false);
+    } on StateError catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _clear() async {
+    setState(() => _saving = true);
+    try {
+      await widget.repository.setMomoDetails();
+      if (!mounted) return;
+      setState(() => _editing = false);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = widget.repository.myMomoDetails;
+    return YenkoShowcaseCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.account_balance_wallet_outlined,
+                color: YenkoColors.gold,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Mobile money payout number',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Passengers pay this number directly after you confirm their seat. YɛnKɔ does not collect, hold, or verify this payment.',
+            style: TextStyle(fontSize: 11, color: YenkoColors.gray),
+          ),
+          const SizedBox(height: 12),
+          if (!_editing) ...[
+            if (current == null)
+              const Text(
+                'Not set yet',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+              )
+            else
+              Text(
+                '${current.networkLabel} · ${current.momoNumber}',
+                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+              ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _startEditing,
+              icon: const Icon(Icons.edit_outlined, size: 16),
+              label: Text(current == null ? 'Add payout number' : 'Edit'),
+            ),
+          ] else ...[
+            TextField(
+              controller: _numberController,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'Mobile money number',
+                hintText: '+233244000111',
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final option in const [
+                  ('mtn', 'MTN MoMo'),
+                  ('telecel', 'Telecel Cash'),
+                  ('airteltigo', 'AirtelTigo Money'),
+                ])
+                  ChoiceChip(
+                    label: Text(option.$2),
+                    selected: _network == option.$1,
+                    onSelected: (_) => setState(() => _network = option.$1),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (current != null)
+                  TextButton(
+                    onPressed: _saving ? null : _clear,
+                    child: const Text('Remove'),
+                  ),
+                const Spacer(),
+                TextButton(
+                  onPressed: _saving
+                      ? null
+                      : () => setState(() => _editing = false),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 4),
+                FilledButton(
+                  onPressed: _saving ? null : _save,
+                  child: _saving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }

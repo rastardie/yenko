@@ -7,9 +7,12 @@ const repository = {
   listBookings: async () => [],
   listDriverSummaries: async () => [],
   listDriverPendingReservations: async () => [],
+  listDriverConfirmedReservations: async () => [],
   cancelReservation: async () => ({ reason: 'reservation_not_found' }),
   confirmDriverReservation: async () => ({ reason: 'reservation_not_found' }),
   declineDriverReservation: async () => ({ reason: 'reservation_not_found' }),
+  markPaymentSent: async () => ({ reason: 'reservation_not_found' }),
+  markPaymentReceived: async () => ({ reason: 'reservation_not_found' }),
 };
 const service = new TripService({ tripRepository: repository });
 
@@ -59,6 +62,29 @@ test('the role is still required even when the permission is held', async () => 
   await assert.rejects(
     service.listDriverSummaries({ actor: { subject: 'x', role: 'passenger', permissions: ['trips:manage_own'] } }),
     /driver role is required/,
+  );
+});
+
+test('payment self-report needs the matching role and permission on each side', async () => {
+  await assert.rejects(
+    service.markPaymentSent({ actor: rider(['reservations:book']), reservationId: 'r-1' }),
+    /reservations:report_payment/,
+  );
+  await assert.rejects(
+    service.markPaymentSent({ actor: driver(['reservations:report_payment']), reservationId: 'r-1' }),
+    /passenger role is required/,
+  );
+  await assert.rejects(
+    service.markPaymentReceived({ actor: driver(['trips:manage_own']), reservationId: 'r-1' }),
+    /trips:confirm_payment/,
+  );
+  await assert.rejects(
+    service.markPaymentReceived({ actor: rider(['trips:confirm_payment']), reservationId: 'r-1' }),
+    /driver role is required/,
+  );
+  await assert.rejects(
+    service.listDriverConfirmedReservations({ actor: driver(['trips:offer']) }),
+    /trips:manage_own/,
   );
 });
 

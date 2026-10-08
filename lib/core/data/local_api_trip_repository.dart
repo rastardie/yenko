@@ -36,6 +36,8 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
   final List<YenkoNotification> _notifications = [];
   final List<DriverTripSummary> _driverTripSummaries = [];
   final List<Booking> _pendingDriverReservations = [];
+  final List<Booking> _confirmedDriverReservations = [];
+  DriverMomo? _myMomo;
   final _random = Random.secure();
 
   Map<String, String> get _authHeaders => {
@@ -62,6 +64,13 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
   @override
   List<Booking> get pendingDriverReservations =>
       List.unmodifiable(_pendingDriverReservations);
+
+  @override
+  List<Booking> get confirmedDriverReservations =>
+      List.unmodifiable(_confirmedDriverReservations);
+
+  @override
+  DriverMomo? get myMomoDetails => _myMomo;
 
   @override
   Booking? get activeBooking => _bookings.isEmpty ? null : _bookings.first;
@@ -121,6 +130,54 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
       method: 'POST',
       path:
           '/v1/driver/reservations/${Uri.encodeComponent(booking.id)}/decline',
+      headers: _authHeaders,
+    );
+    await _loadAll(notify: true);
+  }
+
+  @override
+  Future<void> setMomoDetails({String? momoNumber, String? momoNetwork}) async {
+    if (!_isDriver) {
+      throw StateError('Only a driver account can set a payout number.');
+    }
+    final body = await _request(
+      method: 'PUT',
+      path: '/v1/me/momo',
+      payload: {'momoNumber': momoNumber, 'momoNetwork': momoNetwork},
+      headers: _authHeaders,
+    );
+    final data = Map<String, dynamic>.from(body['data'] as Map);
+    _myMomo = data['momoNumber'] == null
+        ? null
+        : DriverMomo.fromApi(data);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> markPaymentSent(Booking booking) async {
+    if (!_isPassenger) {
+      throw StateError('Only a passenger account can mark a payment sent.');
+    }
+    await _request(
+      method: 'POST',
+      path:
+          '/v1/me/reservations/${Uri.encodeComponent(booking.id)}/mark-paid',
+      headers: _authHeaders,
+    );
+    await _loadAll(notify: true);
+  }
+
+  @override
+  Future<void> markPaymentReceived(Booking booking) async {
+    if (!_isDriver) {
+      throw StateError(
+        'Only a driver account can mark a payment received.',
+      );
+    }
+    await _request(
+      method: 'POST',
+      path:
+          '/v1/driver/reservations/${Uri.encodeComponent(booking.id)}/mark-received',
       headers: _authHeaders,
     );
     await _loadAll(notify: true);
@@ -202,6 +259,16 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
             headers: _authHeaders,
           )
         : <String, dynamic>{'data': const []};
+    final confirmedDriverReservationsResponse = _isDriver
+        ? await _request(
+            method: 'GET',
+            path: '/v1/driver/reservations/confirmed',
+            headers: _authHeaders,
+          )
+        : <String, dynamic>{'data': const []};
+    final momoResponse = _isDriver
+        ? await _request(method: 'GET', path: '/v1/me/momo', headers: _authHeaders)
+        : <String, dynamic>{'data': const <String, dynamic>{}};
     _replace(_trips, _records(tripsResponse).map(Trip.fromApi));
     _replace(_bookings, _records(reservationsResponse).map(Booking.fromApi));
     _replace(
@@ -216,6 +283,16 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
       _pendingDriverReservations,
       _records(driverReservationsResponse).map(Booking.fromApi),
     );
+    _replace(
+      _confirmedDriverReservations,
+      _records(confirmedDriverReservationsResponse).map(Booking.fromApi),
+    );
+    final momoData = Map<String, dynamic>.from(
+      momoResponse['data'] as Map? ?? const {},
+    );
+    _myMomo = momoData['momoNumber'] == null
+        ? null
+        : DriverMomo.fromApi(momoData);
     if (notify) {
       notifyListeners();
     }
@@ -255,6 +332,10 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
       case 'DELETE':
         response = await _client
             .delete(uri, headers: requestHeaders, body: body)
+            .timeout(const Duration(seconds: 10));
+      case 'PUT':
+        response = await _client
+            .put(uri, headers: requestHeaders, body: body)
             .timeout(const Duration(seconds: 10));
       default:
         throw StateError('Unsupported HTTP method: $method');

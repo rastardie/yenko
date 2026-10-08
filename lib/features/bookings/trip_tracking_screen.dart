@@ -300,6 +300,10 @@ class _BookingCard extends StatelessWidget {
               ),
             ],
           ),
+          if (confirmed && booking.driverMomo != null) ...[
+            const SizedBox(height: 12),
+            _PaymentSection(booking: booking, repository: repository),
+          ],
           if (requested) ...[
             const SizedBox(height: 12),
             SizedBox(
@@ -315,6 +319,111 @@ class _BookingCard extends StatelessWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown on a confirmed booking: the driver's mobile money payout number and
+/// a "Mark as paid" action. The passenger pays this number directly, outside
+/// the app — YɛnKɔ never collects, holds, or verifies this payment. See
+/// [TripRepository.markPaymentSent] and HANDOVER.md.
+class _PaymentSection extends StatefulWidget {
+  const _PaymentSection({required this.booking, required this.repository});
+  final Booking booking;
+  final TripRepository repository;
+
+  @override
+  State<_PaymentSection> createState() => _PaymentSectionState();
+}
+
+class _PaymentSectionState extends State<_PaymentSection> {
+  bool _saving = false;
+
+  Future<void> _markPaid() async {
+    setState(() => _saving = true);
+    try {
+      await widget.repository.markPaymentSent(widget.booking);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Marked as paid. Awaiting the driver.')),
+      );
+    } on StateError catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final momo = widget.booking.driverMomo!;
+    final paymentStatus = widget.booking.paymentStatus;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF5D8),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.account_balance_wallet_outlined,
+                size: 16,
+                color: YenkoColors.charcoal,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Pay ${momo.networkLabel} ${momo.momoNumber} directly',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'YɛnKɔ does not collect this payment — pay the driver yourself, then confirm below.',
+            style: TextStyle(fontSize: 10, color: YenkoColors.gray),
+          ),
+          const SizedBox(height: 10),
+          if (paymentStatus == 'unpaid')
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _saving ? null : _markPaid,
+                icon: const Icon(Icons.check_circle_outline_rounded, size: 16),
+                label: Text(_saving ? 'Saving…' : "I've paid"),
+              ),
+            )
+          else if (paymentStatus == 'passenger_marked_paid')
+            const Text(
+              'Marked as paid — waiting for the driver to confirm.',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: YenkoColors.charcoal,
+              ),
+            )
+          else
+            const Text(
+              'Payment confirmed by the driver.',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: YenkoColors.green,
+              ),
+            ),
         ],
       ),
     );

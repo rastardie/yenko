@@ -23,8 +23,10 @@ const toBookingResponse = (booking) => ({
   tripId: booking.tripId,
   seats: booking.seats,
   status: booking.status,
+  paymentStatus: booking.paymentStatus,
   createdAt: booking.createdAt,
   ...(booking.trip ? { trip: toPublicTrip(booking.trip) } : {}),
+  ...(booking.driverMomo ? { driverMomo: booking.driverMomo } : {}),
 });
 
 export class TripService {
@@ -152,6 +154,47 @@ export class TripService {
     if (result.reason === 'reservation_not_found') throw notFound('Booking not found.');
     if (result.reason === 'reservation_not_pending') {
       throw conflict('Only a pending seat request can be declined.');
+    }
+    return result;
+  }
+
+  /** Confirmed bookings across every trip the signed-in driver owns, for payment follow-up. */
+  async listDriverConfirmedReservations({ actor }) {
+    requireRole(actor, 'driver', 'trips:manage_own');
+    const reservations = await this.tripRepository.listDriverConfirmedReservations({ driverId: actor.subject });
+    return reservations.map(toBookingResponse);
+  }
+
+  /**
+   * Passenger self-reports having sent mobile money payment directly to the
+   * driver, outside the app. Not verified — see migration 011.
+   */
+  async markPaymentSent({ actor, reservationId }) {
+    requireRole(actor, 'passenger', 'reservations:report_payment');
+    const result = await this.tripRepository.markPaymentSent({
+      reservationId,
+      passengerId: actor.subject,
+    });
+    if (result.reason === 'reservation_not_found') throw notFound('Booking not found.');
+    if (result.reason === 'reservation_not_confirmed') {
+      throw conflict('Only a confirmed booking can be marked as paid.');
+    }
+    return result;
+  }
+
+  /**
+   * Driver self-reports having received the passenger's direct mobile money
+   * payment. Not verified — see migration 011.
+   */
+  async markPaymentReceived({ actor, reservationId }) {
+    requireRole(actor, 'driver', 'trips:confirm_payment');
+    const result = await this.tripRepository.markPaymentReceived({
+      reservationId,
+      driverId: actor.subject,
+    });
+    if (result.reason === 'reservation_not_found') throw notFound('Booking not found.');
+    if (result.reason === 'reservation_not_confirmed') {
+      throw conflict('Only a confirmed booking can be marked as payment received.');
     }
     return result;
   }

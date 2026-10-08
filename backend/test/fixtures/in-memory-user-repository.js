@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto';
 export class InMemoryUserRepository {
   #users = new Map();
   #groups = new Map([
-    ['Riders', { id: randomUUID(), role: 'passenger', permissions: [] }],
-    ['Drivers', { id: randomUUID(), role: 'driver', permissions: [] }],
+    ['Riders', { id: randomUUID(), role: 'passenger', permissions: ['reservations:book', 'reservations:cancel_own', 'reservations:view_own', 'reservations:report_payment'] }],
+    ['Drivers', { id: randomUUID(), role: 'driver', permissions: ['trips:offer', 'trips:manage_own', 'trips:confirm_payment'] }],
     ['Admins', { id: randomUUID(), role: 'admin', permissions: ['users:read', 'groups:read'] }],
     ['Super Admins', { id: randomUUID(), role: 'super_admin', permissions: ['users:read', 'groups:read', 'audit:read'] }],
   ]);
@@ -55,6 +55,11 @@ export class InMemoryUserRepository {
     return this.#users.get(id) ?? null;
   }
 
+  /** Test helper only: synchronous lookup, for wiring a momoLookup callback. */
+  peek(id) {
+    return this.#users.get(id) ?? null;
+  }
+
   async rolesForUser(userId) {
     const roles = [];
     for (const [name, group] of this.#groups) {
@@ -101,6 +106,7 @@ export class InMemoryUserRepository {
       auth_version: 0, status, home_area: homeArea ?? null,
       legal_surname: legalSurname, legal_given_names: legalGivenNames,
       legal_name_source: legalNameSource, id_verified: false,
+      momo_number: null, momo_network: null,
     };
     this.#users.set(id, user);
     const groupNames = { passenger: 'Riders', driver: 'Drivers', admin: 'Admins', super_admin: 'Super Admins' };
@@ -125,6 +131,12 @@ export class InMemoryUserRepository {
 
   async markPhoneVerified(userId) {
     this.#users.get(userId).phone_verified = true;
+  }
+
+  async setMomoDetails(userId, { momoNumber, momoNetwork }) {
+    const user = this.#users.get(userId);
+    user.momo_number = momoNumber ?? null;
+    user.momo_network = momoNetwork ?? null;
   }
 
   async bumpAuthVersion(userId) {
