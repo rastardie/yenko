@@ -50,4 +50,41 @@ void main() {
       expect(repository.trips.first.seatsAvailable, offeredTrip.seatsAvailable);
     },
   );
+
+  test(
+    'a driver can accept or decline a pending seat request on their own trip',
+    () async {
+      final repository = InMemoryTripRepository();
+      await repository.postTrip(
+        from: 'East Legon',
+        to: 'Circle',
+        pickupJunction: '37 Station',
+        seats: 2,
+        pricePerSeat: 20,
+        womenOnly: false,
+      );
+      final ownTrip = repository.trips.first;
+      await repository.requestSeat(ownTrip);
+
+      expect(repository.pendingDriverReservations, hasLength(1));
+      final pending = repository.pendingDriverReservations.single;
+
+      await repository.confirmReservation(pending);
+      expect(repository.pendingDriverReservations, isEmpty);
+      expect(repository.bookings.single.status, 'confirmed');
+
+      // A second request, this time declined, should release its seat.
+      final refreshedTrip = repository.trips.first;
+      await repository.requestSeat(refreshedTrip);
+      final secondPending = repository.pendingDriverReservations.single;
+      final seatsBeforeDecline = repository.trips.first.seatsAvailable;
+
+      await repository.declineReservation(secondPending);
+      expect(repository.pendingDriverReservations, isEmpty);
+      expect(
+        repository.trips.first.seatsAvailable,
+        seatsBeforeDecline + secondPending.seats,
+      );
+    },
+  );
 }

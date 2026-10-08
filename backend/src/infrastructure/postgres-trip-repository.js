@@ -403,6 +403,152 @@ export class PostgresTripRepository {
     }));
   }
 
+  /** Pending (status 'requested') reservations across every trip this driver owns. */
+  async listDriverPendingReservations({ driverId }) {
+    const { rows } = await this.pool.query(
+      `SELECT r.id, r.trip_id, r.seats, r.status, r.created_at, ${tripJson} AS trip
+       FROM reservations r
+       JOIN trips t ON t.id = r.trip_id
+       JOIN users u ON u.id = t.driver_id
+       WHERE t.driver_id = $1 AND r.status = 'requested'
+       ORDER BY r.created_at ASC`,
+      [driverId],
+    );
+    return rows.map(toBooking);
+  }
+
+  /**
+   * Confirms a pending reservation, but only when its trip belongs to
+   * [driverId] — the ownership check a driver needs that the admin
+   * equivalent (which may act on anyone's booking) does not require.
+   */
+  async confirmDriverReservation({ reservationId, driverId }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT r.id, r.trip_id, r.seats, r.status, r.passenger_id, r.created_at,
+                t.status AS trip_status, t.driver_id, t.origin_name, t.destination_name
+         FROM reservations r JOIN trips t ON t.id = r.trip_id
+         WHERE r.id = $1 FOR UPDATE OF r, t`,
+        [reservationId],
+      );
+      if (!locked.rowCount || locked.rows[0].driver_id !== driverId) {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_found' };
+      }
+      const reservation = locked.rows[0];
+      if (reservation.status === 'confirmed') {
+        await client.query('COMMIT');
+        return { reservation: this.#toReservation(reservation), replayed: true };
+      }
+      if (reservation.status !== 'requested' || reservation.trip_status !== 'open') {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_pending' };
+      }
+
+      const confirmed = await client.query(
+        `UPDATE reservations SET status = 'confirmed', updated_at = now()
+         WHERE id = $1
+         RETURNING id, trip_id, seats, status, created_at`,
+        [reservationId],
+      );
+      await createNotification(client, {
+        recipientId: reservation.passenger_id,
+        type: 'reservation.confirmed',
+        title: 'Seat confirmed',
+        body: `Your ${reservation.seats} seat for ${reservation.origin_name} to ${reservation.destination_name} is confirmed.`,
+        tripId: reservation.trip_id,
+        reservationId,
+      });
+      await client.query(
+        `INSERT INTO audit_events (actor_id, action, aggregate_type, aggregate_id, metadata)
+         VALUES ($1, 'driver.reservation.confirmed', 'reservation', $2, $3::jsonb)`,
+        [driverId, reservationId, JSON.stringify({ tripId: reservation.trip_id })],
+      );
+      await client.query(
+        `INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload)
+         VALUES ('reservation.confirmed', 'reservation', $1, $2::jsonb)`,
+        [reservationId, JSON.stringify({ reservationId, tripId: reservation.trip_id })],
+      );
+      await client.query('COMMIT');
+      return { reservation: this.#toReservation(confirmed.rows[0]), replayed: false };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Declines (cancels) a pending reservation, but only when its trip
+   * belongs to [driverId]. Releases the held seats back to the trip, same
+   * as a passenger-initiated cancellation.
+   */
+  async declineDriverReservation({ reservationId, driverId }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT r.id, r.trip_id, r.seats, r.status, r.passenger_id, r.created_at,
+                t.driver_id, t.origin_name, t.destination_name
+         FROM reservations r JOIN trips t ON t.id = r.trip_id
+         WHERE r.id = $1 FOR UPDATE OF r, t`,
+        [reservationId],
+      );
+      if (!locked.rowCount || locked.rows[0].driver_id !== driverId) {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_found' };
+      }
+      const reservation = locked.rows[0];
+      if (reservation.status === 'cancelled') {
+        await client.query('COMMIT');
+        return { reservation: this.#toReservation(reservation), replayed: true };
+      }
+      if (reservation.status !== 'requested') {
+        await client.query('ROLLBACK');
+        return { reason: 'reservation_not_pending' };
+      }
+
+      const declined = await client.query(
+        `UPDATE reservations SET status = 'cancelled', updated_at = now()
+         WHERE id = $1
+         RETURNING id, trip_id, seats, status, created_at`,
+        [reservationId],
+      );
+      await client.query(
+        'UPDATE trips SET seats_available = seats_available + $1, updated_at = now() WHERE id = $2',
+        [reservation.seats, reservation.trip_id],
+      );
+      await createNotification(client, {
+        recipientId: reservation.passenger_id,
+        type: 'reservation.declined',
+        title: 'Seat request declined',
+        body: `Your ${reservation.seats} seat request for ${reservation.origin_name} to ${reservation.destination_name} was declined by the driver.`,
+        tripId: reservation.trip_id,
+        reservationId,
+      });
+      await client.query(
+        `INSERT INTO audit_events (actor_id, action, aggregate_type, aggregate_id, metadata)
+         VALUES ($1, 'driver.reservation.declined', 'reservation', $2, $3::jsonb)`,
+        [driverId, reservationId, JSON.stringify({ tripId: reservation.trip_id, seats: reservation.seats })],
+      );
+      await client.query(
+        `INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload)
+         VALUES ('reservation.cancelled', 'reservation', $1, $2::jsonb)`,
+        [reservationId, JSON.stringify({ reservationId, tripId: reservation.trip_id, seats: reservation.seats })],
+      );
+      await client.query('COMMIT');
+      return { reservation: this.#toReservation(declined.rows[0]), replayed: false };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   #toReservation(row) {
     return clone({
       id: row.id,

@@ -146,6 +146,70 @@ export class InMemoryTripRepository {
       });
   }
 
+  /** Pending (status 'requested') reservations across every trip this driver owns. */
+  async listDriverPendingReservations({ driverId }) {
+    const ownTripIds = new Set(
+      [...this.#trips.values()].filter((trip) => trip.driver.id === driverId).map((trip) => trip.id),
+    );
+    return [...this.#reservations.values()]
+      .filter((reservation) => reservation.status === 'requested' && ownTripIds.has(reservation.tripId))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((reservation) => ({ ...copy(reservation), trip: copy(this.#trips.get(reservation.tripId)) }));
+  }
+
+  /**
+   * Confirms a pending reservation, but only when its trip belongs to
+   * [driverId] — the ownership check a driver needs that the admin
+   * equivalent (which may act on anyone's booking) does not.
+   */
+  async confirmDriverReservation({ reservationId, driverId }) {
+    const reservation = this.#reservations.get(reservationId);
+    if (!reservation) return { reason: 'reservation_not_found' };
+    const trip = this.#trips.get(reservation.tripId);
+    if (!trip || trip.driver.id !== driverId) return { reason: 'reservation_not_found' };
+    if (reservation.status === 'confirmed') return { reservation: copy(reservation), replayed: true };
+    if (reservation.status !== 'requested' || trip.status !== 'open') {
+      return { reason: 'reservation_not_pending' };
+    }
+
+    reservation.status = 'confirmed';
+    this.#createNotification({
+      recipientId: reservation.passengerId,
+      type: 'reservation.confirmed',
+      title: 'Seat confirmed',
+      body: `Your ${reservation.seats} seat for ${trip.from} to ${trip.to} is confirmed.`,
+      tripId: trip.id,
+      reservationId,
+    });
+    return { reservation: copy(reservation), replayed: false };
+  }
+
+  /**
+   * Declines (cancels) a pending reservation, but only when its trip
+   * belongs to [driverId]. Releases the held seats back to the trip, same
+   * as a passenger-initiated cancellation.
+   */
+  async declineDriverReservation({ reservationId, driverId }) {
+    const reservation = this.#reservations.get(reservationId);
+    if (!reservation) return { reason: 'reservation_not_found' };
+    const trip = this.#trips.get(reservation.tripId);
+    if (!trip || trip.driver.id !== driverId) return { reason: 'reservation_not_found' };
+    if (reservation.status === 'cancelled') return { reservation: copy(reservation), replayed: true };
+    if (reservation.status !== 'requested') return { reason: 'reservation_not_pending' };
+
+    reservation.status = 'cancelled';
+    trip.seatsAvailable += reservation.seats;
+    this.#createNotification({
+      recipientId: reservation.passengerId,
+      type: 'reservation.declined',
+      title: 'Seat request declined',
+      body: `Your ${reservation.seats} seat request for ${trip.from} to ${trip.to} was declined by the driver.`,
+      tripId: trip.id,
+      reservationId,
+    });
+    return { reservation: copy(reservation), replayed: false };
+  }
+
   #createNotification({ recipientId, type, title, body, tripId = null, reservationId = null }) {
     this.#notifications.push({
       id: randomUUID(), recipientId, type, title, body, tripId, reservationId,

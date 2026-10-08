@@ -6,7 +6,10 @@ import { TripService } from '../src/application/trip-service.js';
 const repository = {
   listBookings: async () => [],
   listDriverSummaries: async () => [],
+  listDriverPendingReservations: async () => [],
   cancelReservation: async () => ({ reason: 'reservation_not_found' }),
+  confirmDriverReservation: async () => ({ reason: 'reservation_not_found' }),
+  declineDriverReservation: async () => ({ reason: 'reservation_not_found' }),
 };
 const service = new TripService({ tripRepository: repository });
 
@@ -30,6 +33,26 @@ test('driver actions need the driver role and the matching group permission', as
   await assert.rejects(service.listDriverSummaries({ actor: driver(['trips:offer']) }), /trips:manage_own/);
   assert.deepEqual(await service.listDriverSummaries({ actor: driver(['trips:manage_own']) }), []);
   await assert.rejects(service.postTrip({ actor: driver(['trips:manage_own']), input: {} }), /trips:offer/);
+});
+
+test('driver reservation accept/decline need the driver role and trips:manage_own', async () => {
+  await assert.rejects(
+    service.listDriverReservations({ actor: driver(['trips:offer']) }),
+    /trips:manage_own/,
+  );
+  assert.deepEqual(await service.listDriverReservations({ actor: driver(['trips:manage_own']) }), []);
+  await assert.rejects(
+    service.confirmReservation({ actor: driver(['trips:offer']), reservationId: 'r-1' }),
+    /trips:manage_own/,
+  );
+  await assert.rejects(
+    service.declineReservation({ actor: driver(['trips:offer']), reservationId: 'r-1' }),
+    /trips:manage_own/,
+  );
+  await assert.rejects(
+    service.confirmReservation({ actor: rider(['trips:manage_own']), reservationId: 'r-1' }),
+    /driver role is required/,
+  );
 });
 
 test('the role is still required even when the permission is held', async () => {

@@ -136,6 +136,13 @@ class _BookingCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final trip = booking.trip;
     final requested = booking.status == 'requested';
+    final confirmed = booking.status == 'confirmed';
+    final active = requested || confirmed;
+    final statusLabel = switch (booking.status) {
+      'requested' => 'Awaiting driver',
+      'confirmed' => 'Confirmed',
+      _ => 'Cancelled',
+    };
     return YenkoShowcaseCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -146,21 +153,21 @@ class _BookingCard extends StatelessWidget {
                 width: 30,
                 height: 30,
                 decoration: BoxDecoration(
-                  color: requested
+                  color: active
                       ? const Color(0xFFDDF8EA)
                       : const Color(0xFFF1F1F1),
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
-                  requested ? Icons.check_rounded : Icons.cancel_outlined,
-                  color: requested ? YenkoColors.green : YenkoColors.gray,
+                  active ? Icons.check_rounded : Icons.cancel_outlined,
+                  color: active ? YenkoColors.green : YenkoColors.gray,
                   size: 18,
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  requested ? 'Upcoming ride' : 'Cancelled',
+                  statusLabel,
                   style: const TextStyle(fontWeight: FontWeight.w900),
                 ),
               ),

@@ -42,11 +42,31 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   // yet, so this toggle does not persist anywhere. See class doc comment.
   bool _online = true;
 
+  Future<void> _respond(
+    BuildContext context, {
+    required Future<void> action,
+    required String successMessage,
+  }) async {
+    try {
+      await action;
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(successMessage)));
+    } on StateError catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.repository,
     builder: (context, _) {
       final summaries = widget.repository.driverTripSummaries;
+      final pending = widget.repository.pendingDriverReservations;
       final activeSummaries = summaries
           .where(
             (summary) =>
@@ -151,6 +171,57 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 onPressed: widget.onOfferRide,
               ),
               const SizedBox(height: 22),
+              if (pending.isNotEmpty) ...[
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Seat requests',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFE8A3),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${pending.length} pending',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: YenkoColors.charcoal,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                for (final booking in pending) ...[
+                  _SeatRequestCard(
+                    booking: booking,
+                    onAccept: () => _respond(
+                      context,
+                      action: widget.repository.confirmReservation(booking),
+                      successMessage: 'Seat request accepted.',
+                    ),
+                    onDecline: () => _respond(
+                      context,
+                      action: widget.repository.declineReservation(booking),
+                      successMessage: 'Seat request declined.',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                const SizedBox(height: 10),
+              ],
               const Text(
                 'Your posted rides',
                 style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
@@ -310,6 +381,78 @@ class _DriverTripCard extends StatelessWidget {
               Text(
                 'Expected GH₵ ${summary.expectedFare}',
                 style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SeatRequestCard extends StatelessWidget {
+  const _SeatRequestCard({
+    required this.booking,
+    required this.onAccept,
+    required this.onDecline,
+  });
+
+  final Booking booking;
+  final VoidCallback onAccept;
+  final VoidCallback onDecline;
+
+  @override
+  Widget build(BuildContext context) {
+    final trip = booking.trip;
+    return YenkoShowcaseCard(
+      color: const Color(0xFFFFF5D8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${trip.from}  →  ${trip.to}',
+                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
+                ),
+              ),
+              Text(
+                '${booking.seats} seat · GH₵ ${booking.totalPrice}',
+                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${trip.departureLabel} · Meet at ${trip.pickupJunction}',
+            style: const TextStyle(fontSize: 11, color: YenkoColors.gray),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onDecline,
+                  icon: const Icon(Icons.close_rounded, size: 17),
+                  label: const Text('Decline'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: YenkoColors.red,
+                    side: const BorderSide(color: YenkoColors.red),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: onAccept,
+                  icon: const Icon(Icons.check_rounded, size: 17),
+                  label: const Text('Accept'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: YenkoColors.green,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
               ),
             ],
           ),

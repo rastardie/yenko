@@ -149,3 +149,96 @@ test('cancels a requested booking, restores seats, and excludes it from driver t
 test('refuses production startup without PostgreSQL persistence and OIDC', () => {
   assert.throws(() => createApp({ environment: 'production' }), /Production requires/);
 });
+
+test('a driver can list, confirm and decline pending seat requests on their own trips', async () => {
+  await withServer(async (baseUrl) => {
+    const driverHeaders = {
+      'content-type': 'application/json',
+      'x-yenko-actor-id': 'driver-kwame',
+      'x-yenko-role': 'driver',
+    };
+
+    const toConfirm = await json(await fetch(`${baseUrl}/v1/trips/trip-kwame/reservations`, {
+      method: 'POST',
+      headers: { ...passengerHeaders, 'idempotency-key': 'driver-flow-confirm-001' },
+      body: JSON.stringify({ seats: 1 }),
+    }));
+    assert.equal(toConfirm.status, 201);
+
+    const toDecline = await json(await fetch(`${baseUrl}/v1/trips/trip-kwame/reservations`, {
+      method: 'POST',
+      headers: {
+        ...passengerHeaders,
+        'x-yenko-actor-id': 'passenger-002',
+        'idempotency-key': 'driver-flow-decline-001',
+      },
+      body: JSON.stringify({ seats: 1 }),
+    }));
+    assert.equal(toDecline.status, 201);
+
+    const pending = await json(await fetch(`${baseUrl}/v1/driver/reservations`, { headers: driverHeaders }));
+    assert.equal(pending.status, 200);
+    assert.equal(pending.body.data.length, 2);
+    assert.ok(pending.body.data.every((reservation) => reservation.status === 'requested'));
+
+    const confirm = await json(await fetch(
+      `${baseUrl}/v1/driver/reservations/${toConfirm.body.data.id}/confirm`,
+      { method: 'POST', headers: driverHeaders },
+    ));
+    assert.equal(confirm.status, 200);
+    assert.equal(confirm.body.data.status, 'confirmed');
+    assert.equal(confirm.body.data.idempotentReplay, false);
+
+    const decline = await json(await fetch(
+      `${baseUrl}/v1/driver/reservations/${toDecline.body.data.id}/decline`,
+      { method: 'POST', headers: driverHeaders },
+    ));
+    assert.equal(decline.status, 200);
+    assert.equal(decline.body.data.status, 'cancelled');
+
+    // Declining released the seat; confirming did not change seat inventory
+    // (it was already decremented when the seat was requested).
+    const trips = await json(await fetch(`${baseUrl}/v1/trips`));
+    assert.equal(trips.body.data.find((trip) => trip.id === 'trip-kwame').seatsAvailable, 2);
+
+    const stillPending = await json(await fetch(`${baseUrl}/v1/driver/reservations`, { headers: driverHeaders }));
+    assert.equal(stillPending.body.data.length, 0);
+  });
+});
+
+test('a driver cannot confirm or decline another driver\'s reservation', async () => {
+  await withServer(async (baseUrl) => {
+    const reservation = await json(await fetch(`${baseUrl}/v1/trips/trip-kwame/reservations`, {
+      method: 'POST',
+      headers: { ...passengerHeaders, 'idempotency-key': 'driver-ownership-001' },
+      body: JSON.stringify({ seats: 1 }),
+    }));
+    assert.equal(reservation.status, 201);
+
+    const otherDriverHeaders = {
+      'content-type': 'application/json',
+      'x-yenko-actor-id': 'driver-ama',
+      'x-yenko-role': 'driver',
+    };
+
+    const confirmAttempt = await json(await fetch(
+      `${baseUrl}/v1/driver/reservations/${reservation.body.data.id}/confirm`,
+      { method: 'POST', headers: otherDriverHeaders },
+    ));
+    assert.equal(confirmAttempt.status, 404);
+
+    const declineAttempt = await json(await fetch(
+      `${baseUrl}/v1/driver/reservations/${reservation.body.data.id}/decline`,
+      { method: 'POST', headers: otherDriverHeaders },
+    ));
+    assert.equal(declineAttempt.status, 404);
+
+    // A passenger (even the one who made the request) cannot use the
+    // driver-only confirm/decline routes at all.
+    const passengerAttempt = await json(await fetch(
+      `${baseUrl}/v1/driver/reservations/${reservation.body.data.id}/confirm`,
+      { method: 'POST', headers: passengerHeaders },
+    ));
+    assert.equal(passengerAttempt.status, 403);
+  });
+});

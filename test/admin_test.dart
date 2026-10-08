@@ -1123,4 +1123,47 @@ void main() {
     expect(find.text('Admin'), findsNothing);
     expect(find.textContaining('Hello, Test'), findsOneWidget);
   });
+
+  testWidgets(
+    'a driver can accept or decline a pending seat request from the dashboard',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final repository = InMemoryTripRepository();
+      await repository.initialize();
+      await repository.postTrip(
+        from: 'East Legon',
+        to: 'Circle',
+        pickupJunction: '37 Station',
+        seats: 2,
+        pricePerSeat: 20,
+        womenOnly: false,
+      );
+      await repository.requestSeat(repository.trips.first);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: YenkoRootScreen(
+            repository: repository,
+            session: _session(role: 'driver'),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Seat requests'), findsOneWidget);
+      expect(find.text('Accept'), findsOneWidget);
+      expect(find.text('Decline'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Accept'));
+      await tester.tap(find.text('Accept'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Seat requests'), findsNothing);
+      expect(repository.bookings.single.status, 'confirmed');
+    },
+  );
 }

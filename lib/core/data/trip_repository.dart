@@ -9,6 +9,11 @@ abstract interface class TripRepository implements Listenable {
   List<Booking> get bookings;
   List<YenkoNotification> get notifications;
   List<DriverTripSummary> get driverTripSummaries;
+
+  /// Pending (status `requested`) seat requests across every trip the
+  /// signed-in driver owns. Empty for passengers and in any state where the
+  /// signed-in account is not a driver.
+  List<Booking> get pendingDriverReservations;
   Booking? get activeBooking;
 
   Future<void> initialize();
@@ -22,6 +27,17 @@ abstract interface class TripRepository implements Listenable {
     required int pricePerSeat,
     required bool womenOnly,
   });
+
+  /// Accepts a pending seat request on one of the signed-in driver's own
+  /// trips. Throws [StateError] if the booking cannot be confirmed (not
+  /// pending, trip no longer open, or not owned by this driver).
+  Future<void> confirmReservation(Booking booking);
+
+  /// Declines a pending seat request on one of the signed-in driver's own
+  /// trips, releasing the held seat back to the trip. Throws [StateError]
+  /// if the booking cannot be declined.
+  Future<void> declineReservation(Booking booking);
+
   Future<void> markNotificationsRead();
 }
 
@@ -95,6 +111,14 @@ class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
       .toList(growable: false);
 
   @override
+  List<Booking> get pendingDriverReservations => _bookings
+      .where(
+        (booking) =>
+            booking.status == 'requested' && booking.trip.driverName == 'You',
+      )
+      .toList(growable: false);
+
+  @override
   Booking? get activeBooking =>
       _bookings.where((booking) => booking.status == 'requested').firstOrNull;
 
@@ -153,6 +177,32 @@ class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
         read: false,
       ),
     );
+    notifyListeners();
+  }
+
+  @override
+  Future<void> confirmReservation(Booking booking) async {
+    final bookingIndex = _bookings.indexWhere((item) => item.id == booking.id);
+    if (bookingIndex < 0 || _bookings[bookingIndex].status != 'requested') {
+      throw StateError('Only a pending seat request can be confirmed.');
+    }
+    _bookings[bookingIndex] = booking.copyWith(status: 'confirmed');
+    notifyListeners();
+  }
+
+  @override
+  Future<void> declineReservation(Booking booking) async {
+    final bookingIndex = _bookings.indexWhere((item) => item.id == booking.id);
+    if (bookingIndex < 0 || _bookings[bookingIndex].status != 'requested') {
+      throw StateError('Only a pending seat request can be declined.');
+    }
+    final tripIndex = _trips.indexWhere((trip) => trip.id == booking.trip.id);
+    if (tripIndex >= 0) {
+      _trips[tripIndex] = _trips[tripIndex].copyWith(
+        seatsAvailable: _trips[tripIndex].seatsAvailable + booking.seats,
+      );
+    }
+    _bookings[bookingIndex] = booking.copyWith(status: 'cancelled');
     notifyListeners();
   }
 

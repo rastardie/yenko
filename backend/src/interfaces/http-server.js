@@ -184,6 +184,33 @@ export function createHttpServer({ tripService, actorResolver, authService, admi
         const summaries = await tripService.listDriverSummaries({ actor });
         return sendJson(response, 200, { data: summaries }, requestId);
       }
+      if (request.method === 'GET' && url.pathname === '/v1/driver/reservations') {
+        const actor = await actorResolver.resolve(request.headers);
+        const reservations = await tripService.listDriverReservations({ actor });
+        return sendJson(response, 200, { data: reservations }, requestId);
+      }
+      const driverConfirmMatch = url.pathname.match(/^\/v1\/driver\/reservations\/([^/]+)\/confirm$/);
+      if (request.method === 'POST' && driverConfirmMatch) {
+        const actor = await actorResolver.resolve(request.headers);
+        const result = await tripService.confirmReservation({
+          actor,
+          reservationId: decodeURIComponent(driverConfirmMatch[1]),
+        });
+        return sendJson(response, 200, {
+          data: { ...result.reservation, idempotentReplay: result.replayed },
+        }, requestId);
+      }
+      const driverDeclineMatch = url.pathname.match(/^\/v1\/driver\/reservations\/([^/]+)\/decline$/);
+      if (request.method === 'POST' && driverDeclineMatch) {
+        const actor = await actorResolver.resolve(request.headers);
+        const result = await tripService.declineReservation({
+          actor,
+          reservationId: decodeURIComponent(driverDeclineMatch[1]),
+        });
+        return sendJson(response, 200, {
+          data: { ...result.reservation, idempotentReplay: result.replayed },
+        }, requestId);
+      }
       const cancellationMatch = url.pathname.match(/^\/v1\/me\/reservations\/([^/]+)$/);
       if (request.method === 'DELETE' && cancellationMatch) {
         const actor = await actorResolver.resolve(request.headers);

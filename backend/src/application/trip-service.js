@@ -120,4 +120,39 @@ export class TripService {
       bookingCount: summary.bookingCount,
     }));
   }
+
+  /** Pending seat requests across every trip the signed-in driver owns. */
+  async listDriverReservations({ actor }) {
+    requireRole(actor, 'driver', 'trips:manage_own');
+    const reservations = await this.tripRepository.listDriverPendingReservations({ driverId: actor.subject });
+    return reservations.map(toBookingResponse);
+  }
+
+  /** Accepts a pending seat request on one of the signed-in driver's own trips. */
+  async confirmReservation({ actor, reservationId }) {
+    requireRole(actor, 'driver', 'trips:manage_own');
+    const result = await this.tripRepository.confirmDriverReservation({
+      reservationId,
+      driverId: actor.subject,
+    });
+    if (result.reason === 'reservation_not_found') throw notFound('Booking not found.');
+    if (result.reason === 'reservation_not_pending') {
+      throw conflict('Only a pending seat request on an open trip can be confirmed.');
+    }
+    return result;
+  }
+
+  /** Declines a pending seat request on one of the signed-in driver's own trips. */
+  async declineReservation({ actor, reservationId }) {
+    requireRole(actor, 'driver', 'trips:manage_own');
+    const result = await this.tripRepository.declineDriverReservation({
+      reservationId,
+      driverId: actor.subject,
+    });
+    if (result.reason === 'reservation_not_found') throw notFound('Booking not found.');
+    if (result.reason === 'reservation_not_pending') {
+      throw conflict('Only a pending seat request can be declined.');
+    }
+    return result;
+  }
 }

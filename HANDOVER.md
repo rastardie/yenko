@@ -291,6 +291,37 @@ What's now safely under version control: the full Flutter `lib/`, `test/`, `andr
 
 **Not yet done:** no remote configured (no GitHub/GitLab push target set up), no `.gitattributes`, no branch protection or CI. The repo is purely local at this point. Decide on a remote and hosting (GitHub vs GitLab vs private) in a future session if the project is meant to be shared or backed up off this machine.
 
+## 2026-10-08 session (continued) — driver booking accept/decline
+
+The biggest gap flagged earlier this session — drivers having no way to approve or reject a seat request, with bookings auto-confirming on `requestSeat` — is now closed, reusing existing schema and admin logic rather than inventing new patterns.
+
+### What was discovered that changed the scope
+
+The reservations schema (`001_initial.sql`) already had `requested`/`confirmed`/`cancelled`/`expired` states, and **the admin console already has a working confirm/cancel implementation** (`AdminService.confirmBooking`/`cancelBooking`, `POST /v1/admin/bookings/:id/(confirm|cancel)`) — it was just admin-only, with no ownership check (an admin can act on any booking) and no driver-facing route. This meant the real gap was much smaller than initially scoped: no migration was needed, and the transactional logic to copy was already proven in production-shaped code. The new driver endpoints are the same logic plus a `driver_id` ownership check the admin path doesn't need.
+
+### Backend changes
+
+- `postgres-trip-repository.js` / `in-memory-trip-repository.js`: added `listDriverPendingReservations({ driverId })`, `confirmDriverReservation({ reservationId, driverId })`, `declineDriverReservation({ reservationId, driverId })`. Each confirm/decline call verifies the reservation's trip actually belongs to `driverId` before mutating anything — querying by `reservationId` alone would let any driver act on anyone's booking, which is exactly the bug class the admin path doesn't have to guard against (admins are allowed to touch any booking by design).
+- `trip-service.js`: added `listDriverReservations`, `confirmReservation`, `declineReservation`, all gated by `requireRole(actor, 'driver', 'trips:manage_own')` — reusing the permission drivers already hold, no new permission added to the RBAC migrations.
+- `http-server.js`: added `GET /v1/driver/reservations`, `POST /v1/driver/reservations/:id/confirm`, `POST /v1/driver/reservations/:id/decline`.
+- Declining a reservation releases its held seat back to the trip (mirrors passenger self-cancellation); confirming does not change seat inventory (seats were already decremented at request time — confirming only changes status and notifies the passenger).
+- Tests added: `trip-permissions.test.js` (role/permission denial for all three new service methods) and `api.test.js` (full HTTP round trip: list → confirm → decline, plus — the one that actually matters — **a driver cannot confirm or decline another driver's reservation**, asserted as a 404, and a passenger cannot call the driver-only routes at all, asserted as a 403). All 47 backend tests pass (`npm run check`).
+
+### Flutter changes
+
+- `TripRepository` interface: added `pendingDriverReservations` getter, `confirmReservation(Booking)`, `declineReservation(Booking)`.
+- `InMemoryTripRepository` (mock mode): implemented using the same local list-mutation style as the existing `cancelBooking`.
+- `LocalApiTripRepository`: implemented against the three new endpoints above; `_loadAll` now also fetches `/v1/driver/reservations` when the signed-in role is `driver` (mirrors the existing `driverTripSummaries` fetch pattern).
+- `DriverHomeScreen`: added a "Seat requests" section (only rendered when `pendingDriverReservations` is non-empty) with Accept/Decline buttons per pending booking, above "Your posted rides". Errors surface via the same `StateError` → `SnackBar` pattern used elsewhere in the app (`PostTripScreen`, `TripTrackingScreen`).
+- Tests added: a repository-level test (`widget_test.dart`) exercising the full accept/decline state machine directly against `InMemoryTripRepository`, and a widget-level test (`admin_test.dart`) that renders the actual driver dashboard, taps "Accept", and asserts the booking's status changes and the section disappears once there's nothing pending. (The widget test needed a larger `tester.view.physicalSize` — the default test viewport was too small for the button to be hit-testable without scrolling; noting this in case the pattern is needed again for other dashboard widget tests.) All 42 Flutter tests pass (`flutter test`); `flutter analyze` is clean.
+
+### Explicit non-goals / still open
+
+- No push notification or real-time update when a driver confirms/declines — the passenger finds out via the existing in-app notification list (`/v1/me/notifications`), which already worked before this change; nothing new was needed there since `createNotification` was reused as-is.
+- No UI anywhere shows a passenger their booking is specifically "awaiting driver approval" vs. "confirmed" with different visual treatment — ~~`trip_tracking_screen.dart`'s `_BookingCard` still only distinguishes...~~ **Fixed in this same session, same commit:** `_BookingCard` now shows three distinct states — "Awaiting driver" (requested, green), "Confirmed" (confirmed, green), "Cancelled" (anything else, gray) — instead of the binary requested/cancelled treatment that would have mislabeled a newly-confirmed booking as cancelled. The "Cancel ride" and "View" buttons remain gated on `requested` only, unchanged, since the backend only allows a passenger to self-cancel a still-pending request.
+- Still no payments, so "confirm" has no monetary meaning yet — it is purely a status change.
+
+
 ## Suggested future-session prompt
 
 > Continue YɛnKɔ from `/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ`. Read `HANDOVER.md` first in full. First confirm an actual sign-in through the PWA's browser UI (the boot-crash was fixed and verified error-free, but a real click-through login was not). The real logo is `assets/app/yenko_logo.png` — delete the leftover FaMe-branded `assets/yenko-logo-lockup-preview.png` if you touch assets. The admin console, RBAC, and email/social auth backend are all real and substantially complete — read the "What changed" section before assuming anything is a stub; the actual remaining stubs are: mail/SMS delivery (console-only, `devCode` leak), and the native social-login SDKs on the Flutter side (server-side verification is real for Google/Apple/Facebook/X). This project has no git history — initializing one is overdue and should be treated as a priority, not deferred further. Always sanity-check claims in this file by reading the actual source before building on them, the way the last two handovers each had errors that only surfaced on re-investigation.

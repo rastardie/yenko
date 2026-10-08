@@ -35,6 +35,7 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
   final List<Booking> _bookings = [];
   final List<YenkoNotification> _notifications = [];
   final List<DriverTripSummary> _driverTripSummaries = [];
+  final List<Booking> _pendingDriverReservations = [];
   final _random = Random.secure();
 
   Map<String, String> get _authHeaders => {
@@ -57,6 +58,10 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
   @override
   List<DriverTripSummary> get driverTripSummaries =>
       List.unmodifiable(_driverTripSummaries);
+
+  @override
+  List<Booking> get pendingDriverReservations =>
+      List.unmodifiable(_pendingDriverReservations);
 
   @override
   Booking? get activeBooking => _bookings.isEmpty ? null : _bookings.first;
@@ -88,6 +93,34 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
     await _request(
       method: 'DELETE',
       path: '/v1/me/reservations/${Uri.encodeComponent(booking.id)}',
+      headers: _authHeaders,
+    );
+    await _loadAll(notify: true);
+  }
+
+  @override
+  Future<void> confirmReservation(Booking booking) async {
+    if (!_isDriver) {
+      throw StateError('Only a driver account can confirm a seat request.');
+    }
+    await _request(
+      method: 'POST',
+      path:
+          '/v1/driver/reservations/${Uri.encodeComponent(booking.id)}/confirm',
+      headers: _authHeaders,
+    );
+    await _loadAll(notify: true);
+  }
+
+  @override
+  Future<void> declineReservation(Booking booking) async {
+    if (!_isDriver) {
+      throw StateError('Only a driver account can decline a seat request.');
+    }
+    await _request(
+      method: 'POST',
+      path:
+          '/v1/driver/reservations/${Uri.encodeComponent(booking.id)}/decline',
       headers: _authHeaders,
     );
     await _loadAll(notify: true);
@@ -162,6 +195,13 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
             headers: _authHeaders,
           )
         : <String, dynamic>{'data': const []};
+    final driverReservationsResponse = _isDriver
+        ? await _request(
+            method: 'GET',
+            path: '/v1/driver/reservations',
+            headers: _authHeaders,
+          )
+        : <String, dynamic>{'data': const []};
     _replace(_trips, _records(tripsResponse).map(Trip.fromApi));
     _replace(_bookings, _records(reservationsResponse).map(Booking.fromApi));
     _replace(
@@ -171,6 +211,10 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
     _replace(
       _driverTripSummaries,
       _records(driverTripsResponse).map(DriverTripSummary.fromApi),
+    );
+    _replace(
+      _pendingDriverReservations,
+      _records(driverReservationsResponse).map(Booking.fromApi),
     );
     if (notify) {
       notifyListeners();
