@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 760" role="img" aria-labelledby="t d">
+  <title id="t">FaMe logo lockup</title>
+  <desc id="d">FaMe vertical logo: twin gold arrows rising up a charcoal road with a white saloon, above the FaMe wordmark and the taglines Fa me lift and Same road. Shared ride.</desc>
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#FFC72E"/><stop offset="0.55" stop-color="#F3B400"/><stop offset="1" stop-color="#E19A00"/>
+    </linearGradient>
+    <linearGradient id="road" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A2E35"/><stop offset="1" stop-color="#15171B"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D7E3EE"/><stop offset="1" stop-color="#A9BCCD"/>
+    </linearGradient>
+    <g id="mark">
+      <path d="M104,378 C150,300 176,190 190,86 L210,86 C224,190 250,300 296,378 Z" fill="url(#road)" stroke="#15171B" stroke-width="2" stroke-linejoin="round"/>
+      <g fill="#F4F2EA">
+        <path d="M197.4,120 h5.2 l0.7,16 h-6.6 z"/>
+        <path d="M196.3,150 h7.4 l1.0,20 h-9.4 z"/>
+        <path d="M194.7,190 h10.6 l1.5,26 h-13.6 z"/>
+        <path d="M192.5,240 h15.0 l2.1,30 h-19.2 z"/>
+      </g>
+      <g transform="translate(137,286) scale(0.92)" stroke-linejoin="round">
+        <ellipse cx="70" cy="92" rx="66" ry="10" fill="#000" opacity="0.16"/>
+        <path d="M6,52 L18,17 C21,7 30,2 41,2 H98 C109,2 118,7 121,17 L133,52 V83 H6 Z" fill="#F7F5EF" stroke="#15171B" stroke-width="2"/>
+        <path d="M18,49 L27,21 C29,15 34,12 40,12 H99 C105,12 110,15 112,21 L121,49 Z" fill="#1B1D22"/>
+        <path d="M34,24 H66 V45 H24 L30,28 C31,25 32,24 34,24 Z" fill="url(#glass)"/>
+        <path d="M73,24 H105 C107,24 108,25 109,28 L115,45 H73 Z" fill="url(#glass)"/>
+        <rect x="8" y="50" width="123" height="20" rx="7" fill="#17191E"/>
+        <rect x="15" y="55" width="18" height="8" rx="4" fill="#FFC72E"/>
+        <rect x="106" y="55" width="18" height="8" rx="4" fill="#FFC72E"/>
+        <path d="M6,74 h18 v9 a9,9 0 0 1 -18,0 z" fill="#17191E"/>
+        <path d="M115,74 h18 v9 a9,9 0 0 1 -18,0 z" fill="#17191E"/>
+      </g>
+      <g fill="url(#gold)" stroke="#E19A00" stroke-width="1.5" stroke-linejoin="round">
+        <path d="M172,40 L133,98 L159,98 L159,182 L185,182 L185,98 L211,98 Z"/>
+        <path d="M228,40 L189,98 L215,98 L215,182 L241,182 L241,98 L267,98 Z"/>
+      </g>
+    </g>
+  </defs>
+
+  <use href="#mark" x="80" y="18" width="400" height="430"/>
+
+  <g font-family="'Poppins','Montserrat','Arial Rounded MT Bold',Arial,sans-serif" text-anchor="middle">
+    <text x="280" y="590" font-size="150" font-weight="800" letter-spacing="-6" fill="#202124">FaMe</text>
+    <text x="280" y="648" font-size="46" font-style="italic" font-weight="600" fill="#E5A900">Fa me lift.</text>
+    <text x="280" y="700" font-size="34" font-weight="500" letter-spacing="0.5" fill="#202124">Same road. Shared ride.</text>
+  </g>
+</svg>

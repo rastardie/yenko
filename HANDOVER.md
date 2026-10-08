@@ -1,0 +1,284 @@
+# YɛnKɔ — Continuation Handover
+
+**Last updated:** 2026-10-05
+
+## Active workspace
+
+```text
+/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ
+```
+
+Note the path moved since the last handover: it is now under `TESTS/ynk/YɛnKɔ`, not `TESTS/YɛnKɔ` directly. The project is **still not a Git repository** (`git status` returns "not a git repository"). Nothing here is reversible via git; be careful with destructive edits.
+
+YɛnKɔ is an Accra spare-seat-sharing Flutter application with a Node.js/PostgreSQL backend. It now has three working client targets:
+
+1. **Mock mode** — in-memory data, no sign-in, for pure UI iteration.
+2. **Android (native local full-stack)** — Flutter → local Node API → local PostgreSQL. Confirmed working.
+3. **Web/PWA** — same backend, now fixed this session (see below). Confirmed booting without errors; a full click-through login in-browser was not completed.
+
+## Non-negotiable branding rules
+
+- Product name is **YɛnKɔ**, with `ɛ` and `ɔ`. Never reintroduce **FaMe**.
+- The logo in actual use is `assets/app/yenko_logo.png` (1600×386 wide lockup: car/road emblem + "YɛnKɔ" wordmark). This is what `YenkoLogo` in `lib/shared/widgets/yenko_widgets.dart` renders and what Android/iOS native icons were generated from in an earlier session.
+- **Correction from the last handover:** that document claimed the asset was `assets/app/yenko_journey_logo_emblem.png` and that `yenko_logo.png` was "superseded." That was wrong — `yenko_logo.png` is the live, registered, in-use asset (confirmed via `pubspec.yaml` and a grep of `lib/`). There is no `yenko_journey_logo_emblem.png` file in the repo.
+- `assets/yenko-logo-lockup-preview.png` and `assets/yenko-logo-lockup.svg` exist on disk but are **not registered in `pubspec.yaml` and not referenced anywhere in `lib/`**. Critically, `yenko-logo-lockup-preview.png` is the **old FaMe-branded logo** ("FaMe — Fa me lift. Same road. Shared ride."). It is dead/unused, but should be **deleted**, not left lying around, since it violates the branding rule if anyone mistakes it for current.
+- The full-screen, logo-free city watermark (`assets/app/getting_started_city_watermark.png`) is unchanged and still used via `YenkoShowcaseBackdrop`.
+- PWA icons (`web/icons/*.png`, `web/favicon.png`) were generated this session by cropping the car/road emblem out of `yenko_logo.png` (crop region `(0,0)–(540,386)` on the source file — found by trial since there's no separate square-mark asset). Manifest/HTML title were rebranded from the Flutter template defaults ("yenko_app") to "YɛnKɔ".
+
+## What changed since 2026-10-03 (the last handover)
+
+The last handover undersold how much exists now. A full admin console, RBAC system, email+social auth, and PWA support were all added or substantially built out. Two subagent investigations this session (one backend, one Flutter UI) confirmed the following in detail — see their findings below rather than relying on code comments alone.
+
+### 1. Backend: RBAC and admin system (migrations 006–009)
+
+Two-layer model: coarse `groups.role` (passenger/driver/admin/super_admin/operator/support/fleet_manager/finance, or NULL for custom groups) plus fine-grained `resource:action` permissions joined via `group_permissions`. A user's effective permissions are the union across all their groups, recomputed every request in `postgres-admin-repository.js`.
+
+26 permissions total across three migrations:
+- **006**: `users:read/create/update/manage_status/reset_credentials`, `groups:read/create/update/delete/assign_members/assign_permissions`, `trips:read/cancel`, `reservations:read`, `dashboard:read`, `audit:read`
+- **008**: `users:approve`, `users:delete`, `reservations:manage`, `reports:read`
+- **009**: `admin:access` (gates the entire Admin area), `trips:offer`, `trips:manage_own`, `reservations:book`, `reservations:cancel_own`, `reservations:view_own` (the last five turn rider/driver app actions into real, auditable, revocable permissions instead of being hardcoded to role)
+
+Default grants: Super Admins hold every permission (fixed, cannot be edited — `setGroupPermissions` rejects attempts). Admins hold everything except `audit:read`. Operators/Support/Fleet Managers/Finance hold narrower read-mostly scopes (see migration 006 for exact lists). **Only Super Admins and Admins hold `admin:access` by default** — other staff groups have real permissions but no Admin menu until an administrator explicitly grants it on their group.
+
+Escalation guardrails in `admin-service.js`: only a super_admin can manage super_admin accounts or Super Admins group membership; an admin can only grant/revoke permissions they themselves hold; the last active super admin cannot be deleted/suspended/demoted; nobody can suspend/delete their own account; system groups cannot be renamed/deleted.
+
+Every admin write requires a fresh **admin-action token** — a 5-minute HS256 JWT obtained by re-entering the password/PIN at `POST /v1/auth/admin-action-token`, sent as `x-admin-action` on the write request. Brute-force protection on this exists but is **in-memory only** (`adminActionFailures` Map in `auth-service.js`) — lost on restart, not shared across instances, so it will not work correctly behind more than one replica. Every mutation writes an `audit_events` row in the same transaction as the change.
+
+Full admin API surface (`/v1/admin/*`, all gated by `admin:access`, then per-action permission): summary, metrics (period/custom range with per-driver stats and daily series), dashboard, users (CRUD + approve/deny + reset-password + soft delete), groups (CRUD + permission/member assignment), trips (list/get/cancel — cancelling atomically cancels all open bookings and notifies everyone), bookings (list/confirm/cancel), reports/bookings (same shape, separate permission, larger page size), audit-logs (list + distinct actions).
+
+**Flutter side mirrors this exactly** via `session.can('resource:action')` checks (`AdminApiClient`, `LocalAuthSession`). The admin console is one bottom-nav tab (6th, after Home/Offer/Rides/Messages/Profile), only rendered when the signed-in session has `admin:access` (checked once in `main.dart` when building the `AdminApiClient` — the root screen itself does not re-check per permission, so passing an `adminClient` always means "this account gets the tab"). Sections: People (Users, Groups) and Operations (Trips, Bookings), plus full pages for Dashboard, Reports, and Audit. CSV "export" in Reports is clipboard-copy only, not a file/share — this is by design per code comments, not a bug.
+
+### 2. Backend: email + social authentication (migration 010)
+
+**Email signup** (`POST /v1/auth/email/signup`) is real: email + password (bcrypt) + mandatory self-attested legal name (surname + given names, separate from the friendly display name) + optional username/role/home area. A 6-digit OTP (5-minute TTL, 5 attempts) is issued for email verification.
+
+**Mail delivery is a stub.** The only sender is `ConsoleMailSender` (`backend/src/infrastructure/mail/console-mail-sender.js`), which just logs the message. It is wired only when `MAIL_ENABLED=true`. Whenever no real mail sender is configured, the OTP is **returned directly in the API response** as `devCode` — the code's own comment says "Never do this in production." The Flutter verification screen (`email_verification_screen.dart`) already displays this `devCode` on-screen in dev, and also offers **"Skip for now"** — so email verification is currently entirely optional/bypassable end-to-end. The same `devCode` leak pattern applies to phone verification and PIN-reset OTPs (no SMS sender exists at all; `smsSender` is always null in `app.js`).
+
+**Social sign-in** (`POST /v1/auth/social`) is further along than the previous handover assumed:
+- **Google and Apple**: real, working `OidcSocialProvider` — verifies the ID token's signature against the provider's live JWKS endpoint and checks issuer/audience. Only needs `GOOGLE_CLIENT_ID`/`APPLE_CLIENT_ID` env vars to activate (no code changes needed server-side).
+- **Facebook**: real `FacebookSocialProvider` — verifies via Graph API's `/debug_token` then fetches `/me`. Needs `FACEBOOK_APP_ID` + `FACEBOOK_APP_SECRET`. Untested against the live Graph API in this project.
+- **X/Twitter**: real `TwitterSocialProvider` call to `/2/users/me`, but X's public API returns no email, so every X sign-in is forced through the mandatory-username-and-legal-name first-time path — it can never auto-link by email. Only gated by `TWITTER_ENABLED=true`, with no secret verification (it just forwards whatever bearer token the client sends).
+
+**The gap is entirely client-side**: `social_auth_buttons.dart` has no native SDK integration for any provider yet. It always sends an empty token purely to probe server status, which is why tapping any button shows "not enabled" / "configure this provider" regardless of server config. This was already logged as a pending external-accounts item (see below) — that section is still accurate and unchanged.
+
+### 3. Flutter: PWA/web support added and a boot-crash fixed
+
+Flutter web was scaffolded this session (`flutter create . --platforms web`), branded (manifest/title/icons from the real logo, not the dead FaMe asset), and then found to **crash immediately on boot** with `Unsupported operation: Platform._version`.
+
+**Root cause** (confirmed via a readable `flutter run -d chrome` debug stack trace, not guesswork): `local_auth_client.dart`, `local_api_trip_repository.dart`, and `admin_api_client.dart` all built their HTTP clients with `dart:io`'s `HttpClient`. That constructor internally reads `Platform.version` to pick HTTP behavior, which is unimplemented in a browser and throws synchronously — this happened in `main.dart`'s `initState`, before any screen rendered, which is why it looked like a total boot failure rather than a login-specific bug.
+
+Two earlier fix attempts in this session wrongly blamed `local_auth` (its web absence) and did not resolve it — noted here so the mistake isn't repeated. The real fix: migrated all three network-client files from `dart:io HttpClient` to `package:http` (`http: ^1.6.0`, now a pinned dependency), which has a genuine, correct web implementation and works unchanged on Android/iOS. Also added a conditional-import split (`biometric_backend_io.dart` / `biometric_backend_web.dart`) so `local_auth` (which has no official web backend) is never imported at all when compiling for web — this was good practice to keep even though it wasn't the actual bug.
+
+Two existing test files (`local_auth_client_test.dart`, `local_api_trip_repository_test.dart`) mocked the old `HttpClient` type and were updated to use `http.Client`.
+
+**Verified this session:**
+- `flutter test` — all 39 tests pass (6 in `admin_test.dart` groups/standalone + others across all 6 test files)
+- `flutter analyze` (from the required ASCII-only `/tmp` copy — see below) — no issues
+- `flutter build web` — succeeds
+- Headless Chrome load of the built `build/web` output — **0 console/page errors** (previously crashed every time)
+
+**Not verified:** an actual login submission click-through in the browser. The crash-fix was confirmed at the "app boots cleanly" level, not "a user can sign in via the web UI" level. **This is the first thing to confirm next session.**
+
+### 4. Flutter: new screens not in the previous handover
+
+- `email_signup_screen.dart`, `email_verification_screen.dart` — UI for the email+password flow described above.
+- `social_auth_buttons.dart` — the stub probe described above.
+- `features/admin/*` (12 files) — the entire admin console described above.
+- `features/startup/yenko_splash_screen.dart` — a branded splash shown for ~1.6s on launch before the landing/app screen, to guarantee the wide banner logo is seen even though the OS system splash can only show a square icon.
+- `lib/core/data/admin_api_client.dart` — the admin HTTP client (~30KB, by far the largest data file).
+- `lib/core/security/biometric_backend_io.dart` / `biometric_backend_web.dart` — new this session, see above.
+
+## Local development setup
+
+### Backend
+
+```bash
+cd "/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ/backend"
+npm run start:local
+```
+
+This runs migrations and the seed script, then starts on `0.0.0.0:8080` with `AUTH_MODE=local-pin`. **The running process does not reliably pick up code changes** — restart after backend edits (this was re-confirmed working correctly this session: the server picked up new password-auth code without an explicit restart in one case, but do not rely on that).
+
+npm scripts (`backend/package.json`): `start`, `start:local`, `start:docker` (spins up a docker-compose Postgres on port 5433 with an embedded local-only password — fine for local, never for prod), `db:migrate`, `db:seed`, `db:backup`, `test` (`node --test test/*.test.js`), `test:integration` (Postgres-backed, `--test-concurrency=1`), `check` (syntax-checks every `src/*.js` file, then runs `test`).
+
+Seeded accounts are defined in `backend/src/seed.js` (passwords/PINs intentionally not repeated in this document — read the file):
+
+| Username | Role |
+| --- | --- |
+| `ladmin` | admin (also a passenger) |
+| `tst-driver` | driver (also a passenger) |
+| `tst-rider` | passenger |
+
+`seed.js` updates credentials on existing rows in place, so re-running it is always safe.
+
+### Android
+
+```bash
+cd "/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ"
+flutter run -d emulator-5554 \
+  --dart-define=YENKO_USE_LOCAL_API=true \
+  --dart-define=YENKO_API_BASE_URL=http://10.0.2.2:8080
+```
+
+Confirmed working, including the sign-in flow, as of this session (user confirmed "android is fine").
+
+### Web/PWA
+
+```bash
+cd "/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ"
+flutter build web --dart-define=YENKO_USE_LOCAL_API=true --dart-define=YENKO_API_BASE_URL=http://localhost:8080
+cd build/web && python3 -m http.server 8765
+# open http://127.0.0.1:8765/
+```
+
+Note the API base URL is `localhost`, not `10.0.2.2` (that address is Android-emulator-specific and does not exist on web — this is just a `--dart-define`, no code change needed; `AppConfig` in `lib/core/config/app_config.dart` just reads the define).
+
+For live-reload development instead of a static build: `flutter run -d chrome --web-port=<port> --dart-define=...` (requires `CHROME_EXECUTABLE` env var if Chrome isn't on the default path check).
+
+### Static analysis caveat (unchanged from before)
+
+`flutter analyze` fails directly from this Unicode path due to a known analysis-server/LSP bug. Always run it from an ASCII copy:
+
+```bash
+rm -rf /tmp/yenko_analyze_copy && cp -R "/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ" /tmp/yenko_analyze_copy \
+  && (cd /tmp/yenko_analyze_copy && flutter analyze); rm -rf /tmp/yenko_analyze_copy
+```
+
+`flutter test` and builds run fine directly from the real path.
+
+## Pending — external accounts (blocked on the user, not on code)
+
+Unchanged in substance from the last handover, but now confirmed more precisely: the backend verification code is real and working for Google/Apple (OIDC) and Facebook (Graph API), and functional-but-unverified for X. All four are dark until env credentials exist, and **none has a native Flutter SDK integration yet** — `social_auth_buttons.dart` only probes server status.
+
+| Provider | Account action required (user) | Resulting values needed | Backend env var(s) | Flutter native package still to add |
+| --- | --- | --- | --- | --- |
+| Google | OAuth consent screen + OAuth client IDs (Android/iOS/Web) in Google Cloud Console; register SHA-1 (debug now, release later) | Client ID(s) | `GOOGLE_CLIENT_ID` | `google_sign_in` |
+| Apple | Apple Developer Program ($99/yr); enable Sign in with Apple capability; Services ID if needed | Services ID / bundle ID | `APPLE_CLIENT_ID` | `sign_in_with_apple` |
+| Facebook | Facebook Developers app; Android package + key hash, iOS bundle ID + URL scheme; review for scopes beyond public profile/email | App ID + Secret | `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET` | `flutter_facebook_auth` (tbd) |
+| X (Twitter) | X Developer portal project/app; OAuth 2.0 user auth with correct scopes | Client ID | `TWITTER_ENABLED=true` | native OAuth2/PKCE flow (tbd) |
+
+Apple's App Store rule: if any other social login ships on iOS, Sign in with Apple must also be offered — not optional once Google/Facebook ship there.
+
+## Known issues and small debts
+
+- `assets/yenko-logo-lockup-preview.png` is dead FaMe-branded art sitting in the repo — delete it (flagged above, not yet acted on this session since it's unreferenced and therefore low-risk, but it should go).
+- Email verification is fully skippable (`Skip for now` button) and OTP delivery is dev-stubbed (`devCode`). Fine for development, must be closed off before any real users sign up with email.
+- No SMS sender exists at all; phone verification and PIN-reset flows share the same `devCode` leak pattern as email.
+- Admin-action brute-force lockout is in-memory only — will not function correctly once there is more than one backend instance.
+- No general HTTP rate limiting anywhere in the backend (confirmed via code read, not just absence of config) — login, signup, OTP request, and social endpoints are all unthrottled except the narrow admin-action and OTP-attempt counters.
+- No CORS handling and minimal security headers (`x-content-type-options: nosniff`, `cache-control: no-store`, `x-request-id`) — expected to sit behind a reverse proxy, but that proxy does not exist yet either.
+- bcrypt cost factor is 10 — acceptable, on the low side for a 2026 production deployment.
+- Facebook/Twitter social provider HTTP calls have no timeout/abort — a hanging provider call blocks the request.
+- `lib/core/data/local_api_trip_repository.dart` and `admin_api_client.dart` both carry `// ignore_for_file: prefer_initializing_formals` (constructor param names intentionally differ from private fields) — cosmetic, not a bug.
+- `_pinController`/`_confirmPinController` variable names in the auth screens still don't match that they hold passwords — cosmetic rename still pending from the last handover.
+
+## Recommended immediate next session
+
+1. **Confirm an actual sign-in through the PWA's UI** in a real or headless browser — the crash fix was verified at the "boots without error" level, not "a user can complete sign-in" level.
+2. Delete the dead `assets/yenko-logo-lockup-preview.png` (FaMe branding) and `assets/yenko-logo-lockup.svg` if confirmed unused, or wire the SVG in properly if it's meant to replace the PNG lockup.
+3. Decide and implement a real transactional email sender (SMTP/SES) to close the `devCode` leak before any real email signups happen; same decision needed for SMS before enabling phone verification/PIN-reset in production.
+4. Add real HTTP rate limiting (at minimum: login, signup, OTP request, admin-action-token) before any public exposure.
+5. Replace the in-memory admin-action lockout with a shared store (Postgres row or Redis) if/when the backend runs more than one instance.
+6. If moving toward real social sign-in, start with Google (lowest friction: no paid account, no app review) — create the Google Cloud OAuth client IDs, then add `google_sign_in` to the Flutter app and wire a real token into `social_auth_buttons.dart`.
+7. Initialize Git. This is now overdue — RBAC, admin console, PWA support, and a boot-crash fix have all happened with zero version history. Treat this as high priority, not optional polish.
+
+## Holistic suggestions — future add-ons
+
+Looking at the system as a whole (ride-sharing marketplace + admin back-office + multi-platform client), here is where the biggest gaps and highest-leverage additions are, organized by theme rather than by file:
+
+### Trust and safety (currently the weakest layer for a ride-sharing product)
+- **Driver verification**: no vehicle registration, license, or document upload exists anywhere — `postTrip` still hard-codes "Vehicle details pending verification" (per the previous handover; not re-verified this session but no vehicle table exists in any migration through 010). This is a prerequisite for a real pilot, not a nice-to-have.
+- **In-app ratings** for drivers and riders after trip completion — the data model (trips, bookings) could support this with one more table, and it directly affects trust in a peer-to-peer carpool model.
+- **SOS/emergency and trip-sharing with a trusted contact** — nothing exists for this yet; for a transportation app this is usually expected before public launch, especially given the women-only trip filter already signals safety-consciousness in the product.
+- **Report/block a user** — no moderation primitive exists between riders and drivers.
+
+### Payments (currently entirely absent)
+- The admin dashboard and reports already compute "fare value" from booked seats, but there is no payment collection, driver payout, or reconciliation anywhere. Ghana's dominant rails are MTN MoMo, Telecel Cash, and AirtelTigo Money — integrating via an aggregator (Paystack, Flutterwave, or Hubtel) would unlock the core transaction loop the whole admin Reports/Metrics screens are clearly already designed to visualize once real money exists.
+- A wallet/ledger (double-entry) for driver settlement would follow naturally once payment collection exists.
+
+### Communication and delivery (the "write path" is further ahead than the "deliver path")
+- Email **sending** is stubbed (console-only); the same is true for SMS. Both need real providers before any of the OTP/verification flows are production-safe. This is the most concrete, scoped, low-risk next engineering task — pick one provider per channel and swap the sender implementation (the `MailSender` interface already exists, so this is an adapter, not a redesign).
+- Push notifications (FCM/APNs) for trip updates, booking confirmations, and admin alerts — there's already a notification concept in the data model (`notifications_screen.dart`, `/v1/me/notifications`), so push would extend an existing pattern rather than invent one.
+- In-app chat between matched driver and rider — currently a placeholder tab (`features/messages`-equivalent via the Messages bottom-nav item); building this out would close the loop between "booked a seat" and "actually coordinating the pickup."
+
+### Operational maturity (the admin console is strong; the operations behind it are thin)
+- The admin console (dashboard, reports, audit) is genuinely well-built, but it has no background worker layer behind it. Add: an outbox/event publisher so notifications and side effects don't rely on being inline with the request; scheduled pruning of expired sessions/OTPs; audit retention policy.
+- Structured logging and basic observability (error tracking, uptime checks) — right now the only signal is `console.error` on unexpected failures.
+- CI: run `flutter test`, `flutter analyze`, `npm run check`, and the integration suite on every change. This has zero cost to add relative to the size of the codebase that currently has no safety net at all (no git, no CI).
+
+### Platform coverage
+- iOS was scaffolded long ago but has not been built/run/verified in any recent session — worth a build-and-smoke-test pass now that Android and web are both confirmed working, since the three platforms share the same Dart code and the risk is low.
+- The PWA, now that it boots, should get a manifest/service-worker review for actual offline/installability behavior (Flutter's default web template includes a service worker, but whether it's configured well for a flaky-network ride-sharing use case in Accra hasn't been assessed).
+
+### Compliance (Ghana-specific, not yet addressed anywhere)
+- Data Protection Act 2012 (Act 843) registration and a real privacy policy/terms before any real user data is collected — currently legal name, email, and phone are all collected with no stated retention or consent flow.
+- Given the women-only trip filter is already a product feature, this is a good candidate for an early trust-and-safety and legal pass together, since both touch the same sensitive-data questions.
+
+## 2026-10-08 session — personalization + role-based home screens
+
+### Workspace path correction
+
+The "Active workspace" note at the top of this file (`.../ynk/YɛnKɔ`) is **stale/wrong**. Re-verified this session: `.../ynk/YɛnKɔ` is a near-empty leftover directory containing only a `build/` subfolder — not a real Flutter project (no `lib/`, `pubspec.yaml`, etc. inside it). The actual, live project root is:
+
+```text
+/Users/andrewstardie/Documents/TUTS/TESTS/ynk
+```
+
+`lib/`, `backend/`, `pubspec.yaml`, `android/`, `ios/`, `web/` all live directly here. Treat any future handover text that says otherwise as wrong until re-confirmed. Still no git repository at this path (`git status` → "not a git repository") — initializing git remains overdue per the previous handover's recommendation #7.
+
+### Problem identified
+
+1. `PassengerHomeScreen` hardcodes `"Hello, traveller 👋"` — never uses `LocalAuthSession.displayName`, even though that field is already populated correctly and already flows into `ProfileScreen`. Pure wiring gap, no backend change needed.
+2. **There is no driver-specific screen anywhere in the codebase** (confirmed: no `driver*` file under `lib/features/`). `YenkoRootScreen._tabs()` shows every signed-in account — passenger or driver — the identical tab set: Home (a rider search/discovery screen), Offer (post a ride — a driver action oddly available to everyone), Rides, Messages, Profile. The only role-based branch that exists today is the Admin tab (gated on `session.hasAdminAccess`).
+3. `LocalAuthSession.role` (`'passenger'` / `'driver'` / staff roles) and `.displayName` already exist and are reliable — this is purely a Flutter-side routing and UI gap, not a data-availability gap.
+
+### Data model constraint discovered (important for scoping the driver screen)
+
+`TripRepository` (`lib/core/data/trip_repository.dart`) has **no accept/decline step for bookings** — `requestSeat()` directly decrements `seatsAvailable` and inserts a `Booking` with status `requested`; there is no driver-side approval action anywhere in the interface or either implementation (`InMemoryTripRepository`, `LocalApiTripRepository`). So a driver dashboard can show "your posted trips and who/how many seats are booked against them" (via the already-existing `driverTripSummaries` getter — `List<DriverTripSummary>`, each with `trip`, `seatsBooked`, `bookingCount`), but **cannot** show a request-queue with accept/decline buttons without a model + backend change first. Scoped this round's driver screen to what the data already supports; flagged the accept/decline queue as a separate, larger follow-up (needs a new booking status + driver-facing endpoint, not just UI).
+
+### Decisions made (documented here since no one was blocking on them before proceeding)
+
+1. **Passengers no longer see "Offer a ride" as a quick action/tab.** Real Uber/Bolt treat becoming a driver as a separate, deliberate onboarding path, not a casual button next to ride search. `PostTripScreen` (now effectively "driver-only") stays reachable only from the driver tab set.
+2. **Driver screen is UI + existing-repository-wiring only this round** — no backend changes. It surfaces `driverTripSummaries` and `activeBooking`-equivalent state that the repository already computes; it does not add request accept/decline (blocked on the model gap above).
+
+### Plan (in progress)
+
+1. **First-name greeting** — thread `session?.displayName` down into `PassengerHomeScreen` (and the new driver screen), parse the first token as the first name, fall back to "traveller" when `session == null` (mock mode). *(Status: next up.)*
+2. **Role-based tab routing** — branch `YenkoRootScreen._tabs()` on `session.role`:
+   - `driver` → new `DriverHomeScreen` (dashboard) + `PostTripScreen` (offer) + `TripTrackingScreen` (reused as-is — it is already trip/booking-agnostic, not passenger-specific) + `NotificationsScreen` + `ProfileScreen`.
+   - `passenger` → existing `PassengerHomeScreen` (search/discover) + `TripTrackingScreen` + `NotificationsScreen` + `ProfileScreen`. No Offer tab.
+   - Mock mode (`session == null`) → keep today's full tab set (can't branch on a role that doesn't exist yet); this only affects signed-in local-API sessions.
+   - Admin tab logic untouched.
+3. **New `DriverHomeScreen`** (`lib/features/home/driver_home_screen.dart`): greeting with first name; online/offline toggle (presentational only — no backend "availability" field exists, flagged as cosmetic/local state, not persisted); list of the driver's own posted trips via `driverTripSummaries` (route, seats booked/available, expected fare); entry point into "Offer a ride"; rating/trip-count summary reusing fields already on `Trip`.
+4. **Passenger screen cleanup** — remove the "Offer a ride" `_QuickAction` tile from `PassengerHomeScreen` to match decision 1 above.
+5. **Verify** — `flutter test`; `flutter analyze` via the mandatory ASCII `/tmp` copy workaround (ocumented earlier in this file — the Unicode path breaks analysis directly); manual read-through confirming mock mode (`session == null`) still renders without a null-role crash.
+
+### Explicit non-goals this round (don't re-litigate without new input)
+
+- No booking accept/decline workflow (needs backend + model work, see constraint above).
+- No real driver "online/offline" persistence, no GPS/live location, no payments — none of that exists yet anywhere in the stack and is out of scope for a UI personalization/routing pass.
+- No change to the Admin tab or RBAC system.
+
+### Status: implemented and verified this session
+
+All five plan steps above were completed:
+
+1. `PassengerHomeScreen` now takes an optional `displayName` and greets with `'Hello, ${firstNameOf(displayName)} 👋'`; falls back to "traveller" when `displayName` is null/blank (mock mode, or a blank name). `firstNameOf` is a public top-level helper in `passenger_home_screen.dart`, reused by the new driver screen.
+2. `YenkoRootScreen._tabs()` now branches on `session?.role`:
+   - `session == null` (mock mode) → unchanged, full original tab set (Home/Offer/Rides/Messages/Profile), since there's no role to branch on.
+   - `role == 'driver'` → Home tab renders the new `DriverHomeScreen`; Offer tab (existing `PostTripScreen`) is kept.
+   - any other signed-in role (`passenger`, staff roles, etc.) → Home tab renders `PassengerHomeScreen`; **no Offer tab**.
+   - Admin tab logic (`hasAdminAccess`) is untouched and still appended last regardless of the above.
+3. New file `lib/features/home/driver_home_screen.dart` — `DriverHomeScreen`: first-name greeting, a presentational online/offline `Switch` (local state only, not persisted — no backend field exists), three stat tiles (active trips, expected fare, completed trips) computed from the already-existing `TripRepository.driverTripSummaries`, an "Offer a new ride" button wired to switch to the Offer tab, and a list of the driver's own open/confirmed/in-progress trips with seats-booked/open and expected fare per trip. No accept/decline UI, consistent with the non-goal above.
+4. `PassengerHomeScreen`'s "Offer a ride" quick-action tile was removed and replaced with a "Saved places" tile (placeholder, matches the existing non-functional pattern of the other quick actions like Wallet/More) to keep the 4-tile row intact without implying a feature that doesn't exist.
+5. Verified: `flutter analyze` (via the mandatory `/tmp` ASCII-copy workaround) — no issues. `flutter test` — all 40 tests pass. Three pre-existing tests in `test/admin_test.dart` encoded the old "every signed-in role sees Offer" assumption and were updated to match the new role-based behavior (`admins keep the regular tabs…`, `riders keep the familiar tabs and get no admin tab`, and the sign-out-tooltip-on-every-tab test); a new test (`drivers get a dashboard home tab and keep the Offer tab`) was added to cover the driver path, including the first-name greeting.
+
+### Still not done — carried forward, not newly discovered
+
+- Still no git repository anywhere in this project. This has now been flagged in two consecutive handovers as high priority; strongly recommend initializing git before any further feature work, given the amount of uncommitted change accumulating (RBAC, admin console, PWA fix, and now this role-routing change, all with zero version history).
+- Booking accept/decline (a real request queue for drivers) is the natural next step once git exists, since it is model + backend + UI, i.e. a bigger unit of work than anything done this session.
+- The passenger "Wallet", "Saved places", "More" quick actions, and the "My rides" tile, remain non-functional placeholders (pre-existing, not introduced this session) — `onPressed` is unset or a no-op on `_QuickAction`.
+
+## Suggested future-session prompt
+
+> Continue YɛnKɔ from `/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ`. Read `HANDOVER.md` first in full. First confirm an actual sign-in through the PWA's browser UI (the boot-crash was fixed and verified error-free, but a real click-through login was not). The real logo is `assets/app/yenko_logo.png` — delete the leftover FaMe-branded `assets/yenko-logo-lockup-preview.png` if you touch assets. The admin console, RBAC, and email/social auth backend are all real and substantially complete — read the "What changed" section before assuming anything is a stub; the actual remaining stubs are: mail/SMS delivery (console-only, `devCode` leak), and the native social-login SDKs on the Flutter side (server-side verification is real for Google/Apple/Facebook/X). This project has no git history — initializing one is overdue and should be treated as a priority, not deferred further. Always sanity-check claims in this file by reading the actual source before building on them, the way the last two handovers each had errors that only surfaced on re-investigation.

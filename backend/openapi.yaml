@@ -1,0 +1,630 @@
+openapi: 3.1.0
+info:
+  title: YɛnKɔ API
+  version: 0.4.0
+  description: >-
+    Trip, booking, authentication and administration API. Interactive clients
+    authenticate with a bearer token from /v1/auth/login (AUTH_MODE=local-pin,
+    development) or an OIDC provider (production). The x-yenko-* actor headers
+    are a test-only harness for AUTH_MODE=development-header and are rejected in
+    production. Admin routes exist only in local-pin mode; each one checks a
+    specific permission granted through group membership, and every one also
+    requires admin:access ("Open the Admin area", held by Super Admins and
+    Admins by default) or it answers 403. Every admin write (POST, PATCH, PUT,
+    DELETE) additionally needs a fresh x-admin-action token from
+    /v1/auth/admin-action-token, otherwise 403 admin_action_required.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearerAuth: []
+paths:
+  /health/live:
+    get:
+      security: []
+      responses:
+        '200': { description: Process is live }
+  /health/ready:
+    get:
+      security: []
+      responses:
+        '200': { description: Dependencies are ready }
+
+  /v1/auth/signup:
+    post:
+      summary: Create a rider or driver account and start a session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignupRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/Session' }
+        '202':
+          description: >-
+            The account was created but must be approved by an administrator
+            first (SIGNUP_APPROVAL=drivers|all). No session is issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      pending: { type: boolean, example: true }
+                      message: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/auth/admin-action-token:
+    post:
+      summary: Re-enter your password or quick PIN to get a 5-minute token for admin writes
+      description: >-
+        Send the token as the x-admin-action header on admin writes. It is bound
+        to the account and its session version. Five wrong attempts lock the
+        prompt for 10 minutes (429).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        '200':
+          description: Token and its expiry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      token: { type: string }
+                      expiresAt: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /v1/auth/login:
+    post:
+      summary: Sign in with a username or phone and a password or quick PIN
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identity, password]
+              properties:
+                identity: { type: string, description: Username or E.164 phone number }
+                password: { type: string, description: The account password or its quick PIN }
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { description: Account suspended or pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /v1/auth/logout:
+    post:
+      summary: Revoke the current session
+      responses:
+        '200': { description: Signed out }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/phone-verification/request:
+    post:
+      summary: Send a phone verification code (dev returns devCode when no SMS provider is configured)
+      responses:
+        '200': { description: Code issued }
+  /v1/auth/phone-verification/confirm:
+    post:
+      responses:
+        '200': { description: Phone verified }
+  /v1/auth/pin-reset/request:
+    post:
+      summary: Request a quick-PIN reset code; the response never reveals whether the account exists
+      security: []
+      responses:
+        '200': { description: Accepted }
+  /v1/auth/pin-reset/confirm:
+    post:
+      security: []
+      responses:
+        '200': { description: PIN reset }
+  /v1/me:
+    get:
+      summary: The caller's identity, roles and effective permissions
+      responses:
+        '200':
+          description: Current actor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      displayName: { type: string }
+                      role: { type: string }
+                      roles: { type: array, items: { type: string } }
+                      permissions: { type: array, items: { type: string } }
+
+  /v1/trips:
+    get:
+      summary: Open trips with privacy-minimized public details
+      security: []
+      parameters:
+        - name: womenOnly
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Available trips
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Trip' }
+    post:
+      summary: Publish a trip (driver role)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTripRequest' }
+      responses:
+        '201': { description: Trip created }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/trips/{tripId}/reservations:
+    post:
+      summary: Request a seat (passenger role); idempotent per Idempotency-Key
+      parameters:
+        - { name: tripId, in: path, required: true, schema: { type: string } }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateReservationRequest' }
+      responses:
+        '201': { description: Reservation requested }
+        '200': { description: Idempotent replay }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/me/reservations:
+    get:
+      summary: The caller's bookings (passenger role)
+      responses:
+        '200': { description: Bookings }
+  /v1/me/reservations/{reservationId}:
+    delete:
+      summary: Cancel a pending seat request (passenger role)
+      parameters:
+        - { name: reservationId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Cancelled, or an idempotent replay }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/me/notifications:
+    get:
+      responses:
+        '200': { description: The caller's notification inbox }
+  /v1/me/notifications/read:
+    post:
+      responses:
+        '200': { description: All notifications marked read }
+  /v1/driver/trips:
+    get:
+      summary: The caller's trips with booking totals (driver role)
+      responses:
+        '200': { description: Driver trip summaries }
+
+  /v1/admin/dashboard:
+    get:
+      summary: Counts of users, trips, bookings and group membership (dashboard:read)
+      tags: [admin]
+      responses:
+        '200': { description: Dashboard }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/users:
+    get:
+      summary: Search and filter accounts (users:read)
+      tags: [admin]
+      parameters:
+        - { name: search, in: query, schema: { type: string }, description: Matches name, username or phone }
+        - { name: status, in: query, schema: { type: string, enum: [active, suspended, pending, deleted] }, description: Deleted accounts are hidden unless asked for }
+        - { name: groupId, in: query, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200': { $ref: '#/components/responses/Page' }
+    post:
+      summary: Create an account in chosen groups (users:create). Omit password to receive a one-time temporaryPassword.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName, username]
+              properties:
+                displayName: { type: string }
+                username: { type: string }
+                password: { type: string, minLength: 8 }
+                homeArea: { type: string }
+                groupIds: { type: array, items: { type: string, format: uuid } }
+      responses:
+        '201': { description: Created }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/users/{userId}:
+    get:
+      summary: Account detail with groups and effective permissions (users:read)
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200': { description: User }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Edit a name (users:update) or suspend/restore (users:manage_status). Suspending revokes sessions.
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string }
+                homeArea: { type: string }
+                status: { type: string, enum: [active, suspended] }
+      responses:
+        '200': { description: Updated user }
+        '409': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Soft-delete an account (users:delete). Refused for yourself, the last super admin, and anyone with open trips or bookings.
+      description: Clears the username, phone and credentials so they can be reused, removes group memberships and revokes sessions; trips, bookings and audit history are kept.
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200': { description: Deleted }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/users/{userId}/reset-password:
+    post:
+      summary: Set a new password (users:reset_credentials); omit password to generate a one-time one. Revokes sessions.
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200': { description: Reset }
+
+  /v1/admin/permissions:
+    get:
+      summary: Every permission key with a description (groups:read)
+      tags: [admin]
+      responses:
+        '200': { description: Permissions }
+  /v1/admin/groups:
+    get:
+      summary: Groups with member counts and permissions (groups:read)
+      tags: [admin]
+      responses:
+        '200': { description: Groups }
+    post:
+      summary: Create a custom group (groups:create); may only include permissions the caller holds
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 80 }
+                description: { type: string, maxLength: 300 }
+                permissions: { type: array, items: { type: string, example: 'trips:read' } }
+      responses:
+        '201': { description: Created }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/groups/{groupId}:
+    get:
+      summary: Group with members (groups:read)
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/GroupId' }]
+      responses:
+        '200': { description: Group }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Edit a group (groups:update); system groups cannot be renamed
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/GroupId' }]
+      responses:
+        '200': { description: Updated }
+    delete:
+      summary: Delete a custom group (groups:delete); system groups cannot be deleted
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/GroupId' }]
+      responses:
+        '200': { description: Deleted }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/groups/{groupId}/permissions:
+    put:
+      summary: Replace a group's permissions (groups:assign_permissions); callers can only grant or revoke permissions they hold
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/GroupId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions: { type: array, items: { type: string } }
+      responses:
+        '200': { description: Updated group }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/groups/{groupId}/members:
+    post:
+      summary: Add a member (groups:assign_members)
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/GroupId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId: { type: string }
+      responses:
+        '200': { description: Updated group }
+  /v1/admin/groups/{groupId}/members/{userId}:
+    delete:
+      summary: Remove a member (groups:assign_members); the last active super admin cannot be removed
+      tags: [admin]
+      parameters:
+        - { $ref: '#/components/parameters/GroupId' }
+        - { $ref: '#/components/parameters/UserId' }
+      responses:
+        '200': { description: Updated group }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /v1/admin/trips:
+    get:
+      summary: All trips with booking totals (trips:read)
+      tags: [admin]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, cancelled, completed] } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200': { $ref: '#/components/responses/Page' }
+  /v1/admin/trips/{tripId}:
+    get:
+      summary: Trip detail; bookings included with reservations:read
+      tags: [admin]
+      parameters:
+        - { name: tripId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Trip }
+  /v1/admin/trips/{tripId}/cancel:
+    post:
+      summary: Cancel an open trip and its open bookings, notifying the driver and riders (trips:cancel)
+      tags: [admin]
+      parameters:
+        - { name: tripId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Cancelled trip }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/summary:
+    get:
+      summary: Home-screen counts, limited to the sections the caller may see
+      tags: [admin]
+      responses:
+        '200': { description: "users {active, pending}, trips {open}, bookings {requested}, groups {total}" }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/metrics:
+    get:
+      summary: Ridership, bookings, fare value, people and driver performance for a period (dashboard:read)
+      description: Periods are UTC half-open ranges (Accra is UTC). Weeks run Monday to Sunday; custom ranges are capped at 366 days. Fare value is booked seats times price; payments are not collected in the app.
+      tags: [admin]
+      parameters:
+        - { name: period, in: query, schema: { type: string, enum: [today, week, month, custom], default: week } }
+        - { name: from, in: query, schema: { type: string, format: date }, description: Required with period=custom }
+        - { name: to, in: query, schema: { type: string, format: date }, description: Required with period=custom }
+      responses:
+        '200': { description: Metrics }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/admin/users/{userId}/approve:
+    post:
+      summary: Approve an account waiting for approval (users:approve)
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200': { description: Approved user }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/users/{userId}/deny:
+    post:
+      summary: Deny an account waiting for approval; it is soft-deleted (users:approve)
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200': { description: Denied }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/bookings:
+    get:
+      summary: Bookings across all trips, with totals (reservations:read)
+      tags: [admin]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [requested, confirmed, cancelled] } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200': { description: "A page of bookings plus totals {bookings, requested, confirmed, cancelled, seats, fare}" }
+  /v1/admin/bookings/{reservationId}/confirm:
+    post:
+      summary: Confirm a pending booking and notify the rider (reservations:manage)
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/ReservationId' }]
+      responses:
+        '200': { description: Confirmed booking }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/bookings/{reservationId}/cancel:
+    post:
+      summary: Cancel an open booking, return the seats and notify both sides (reservations:manage)
+      tags: [admin]
+      parameters: [{ $ref: '#/components/parameters/ReservationId' }]
+      responses:
+        '200': { description: Cancelled booking }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/reports/bookings:
+    get:
+      summary: Itemized bookings for reports and CSV export, up to 1000 rows (reports:read)
+      tags: [admin]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [requested, confirmed, cancelled] } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: Bookings and totals }
+  /v1/admin/audit-logs/actions:
+    get:
+      summary: Distinct audit action names, for filtering (audit:read)
+      tags: [admin]
+      responses:
+        '200': { description: Action names }
+  /v1/admin/audit-logs:
+    get:
+      summary: Audit trail of admin and trip events (audit:read)
+      tags: [admin]
+      parameters:
+        - { name: action, in: query, schema: { type: string } }
+        - { name: actorId, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200': { $ref: '#/components/responses/Page' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    UserId: { name: userId, in: path, required: true, schema: { type: string } }
+    ReservationId: { name: reservationId, in: path, required: true, schema: { type: string, format: uuid } }
+    GroupId: { name: groupId, in: path, required: true, schema: { type: string, format: uuid } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Offset: { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+  schemas:
+    SignupRequest:
+      type: object
+      required: [displayName]
+      properties:
+        displayName: { type: string, maxLength: 120 }
+        username: { type: string, pattern: '^[a-z0-9_.-]{3,32}$' }
+        phone: { type: string, description: E.164 }
+        password: { type: string, minLength: 8, maxLength: 128 }
+        quickPin: { type: string, minLength: 4, maxLength: 20 }
+        role: { type: string, enum: [passenger, driver] }
+        homeArea: { type: string, maxLength: 120 }
+    CreateTripRequest:
+      type: object
+      additionalProperties: false
+      required: [from, to, pickupJunction, departureAt, seatsAvailable, pricePerSeat, isWomenOnly]
+      properties:
+        from: { type: string, maxLength: 120 }
+        to: { type: string, maxLength: 120 }
+        pickupJunction: { type: string, maxLength: 120 }
+        departureAt: { type: string, format: date-time }
+        seatsAvailable: { type: integer, minimum: 1, maximum: 4 }
+        pricePerSeat: { type: integer, minimum: 1, maximum: 1000 }
+        isWomenOnly: { type: boolean }
+    CreateReservationRequest:
+      type: object
+      additionalProperties: false
+      required: [seats]
+      properties:
+        seats: { type: integer, minimum: 1, maximum: 4 }
+    Trip:
+      type: object
+      required: [id, from, to, pickupJunction, departureAt, seatsAvailable, pricePerSeat, isWomenOnly, status]
+      properties:
+        id: { type: string }
+        from: { type: string }
+        to: { type: string }
+        pickupJunction: { type: string }
+        departureAt: { type: string, format: date-time }
+        seatsAvailable: { type: integer }
+        pricePerSeat: { type: integer }
+        isWomenOnly: { type: boolean }
+        status: { type: string, enum: [open] }
+    SessionUser:
+      type: object
+      properties:
+        id: { type: string }
+        displayName: { type: string }
+        username: { type: [string, 'null'] }
+        phone: { type: [string, 'null'] }
+        role: { type: string, enum: [super_admin, admin, operator, support, finance, fleet_manager, driver, passenger] }
+        roles: { type: array, items: { type: string } }
+        permissions: { type: array, items: { type: string, example: 'users:read' } }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+  responses:
+    Session:
+      description: Access token and the signed-in user
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  mustChangePin: { type: boolean }
+                  user: { $ref: '#/components/schemas/SessionUser' }
+    Page:
+      description: A page of results with the total number of matches
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { type: array, items: { type: object } }
+              total: { type: integer }
+    Error:
+      description: Safe error response
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

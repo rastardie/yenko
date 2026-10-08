@@ -1,0 +1,26 @@
+{
+  "name": "yenko-api",
+  "version": "0.2.0",
+  "private": true,
+  "description": "YɛnKɔ API with PostgreSQL persistence and provider-neutral OIDC authentication.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "start:local": "./scripts/start-local-api.sh",
+    "start:docker": "docker compose up -d postgres && DATABASE_URL=postgresql://yenko:yenko_local_only@127.0.0.1:5433/yenko_development ./scripts/start-local-api.sh",
+    "db:migrate": "node src/migrate.js",
+    "db:seed": "node src/seed.js",
+    "db:backup": "./scripts/backup-postgres.sh",
+    "test": "node --test test/*.test.js",
+    "test:integration": "node --test --test-concurrency=1 test/integration/*.test.js",
+    "check": "node --check src/*.js src/application/*.js src/domain/*.js src/infrastructure/*.js src/interfaces/*.js && npm test"
+  },
+  "dependencies": {
+    "bcryptjs": "2.4.3",
+    "jose": "5.9.6",
+    "pg": "8.13.1"
+  }
+}

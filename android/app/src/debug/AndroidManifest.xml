@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug builds may call the local API at http://10.0.2.2:8080.
+         This setting is deliberately confined to debug; release builds retain
+         Android's default HTTPS-only network policy. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <application android:usesCleartextTraffic="true" />
+</manifest>
