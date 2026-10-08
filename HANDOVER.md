@@ -279,6 +279,18 @@ All five plan steps above were completed:
 - Booking accept/decline (a real request queue for drivers) is the natural next step once git exists, since it is model + backend + UI, i.e. a bigger unit of work than anything done this session.
 - The passenger "Wallet", "Saved places", "More" quick actions, and the "My rides" tile, remain non-functional placeholders (pre-existing, not introduced this session) — `onPressed` is unset or a no-op on `_QuickAction`.
 
+### Git initialized (2026-10-08, later same session)
+
+Done — `git init`, default branch renamed `master` → `main`, initial commit `6c8a53f` with 236 files. Author came from the already-configured global git identity (`Tardie <rastardie@gmail.com>`), not set explicitly this session.
+
+Before committing, `.gitignore` was extended (it previously only covered Flutter/IDE artifacts) to also exclude:
+- `node_modules/`, `backend/node_modules/`, `backend/.env`, `.env` — none of these were present as real secrets at commit time (`backend/.env.example` is a placeholder template with `change-me` values, confirmed by reading it; no actual `.env` file exists anywhere in the tree), but they must never be tracked once one is created locally.
+- `/YɛnKɔ/` and `/yale/` — two small leftover/stray directories at the project root that are not part of the real app (see "Workspace path correction" above; `yale/` is 12K of unknown leftover content, `YɛnKɔ/` is an empty build-artifact-only folder). Left on disk, just untracked, in case anything in them turns out to matter — nothing was deleted.
+
+What's now safely under version control: the full Flutter `lib/`, `test/`, `android/`, `ios/`, `web/` trees, the full `backend/` (migrations, src, tests, Dockerfile, openapi.yaml), `assets/` and `pics/` (logo art), docs, and this handover file itself. What's still intentionally untracked (build output, caches): `.dart_tool/`, `/build/`, `android/.gradle/`, `backend/node_modules/`, `.idea/`.
+
+**Not yet done:** no remote configured (no GitHub/GitLab push target set up), no `.gitattributes`, no branch protection or CI. The repo is purely local at this point. Decide on a remote and hosting (GitHub vs GitLab vs private) in a future session if the project is meant to be shared or backed up off this machine.
+
 ## Suggested future-session prompt
 
 > Continue YɛnKɔ from `/Users/andrewstardie/Documents/TUTS/TESTS/ynk/YɛnKɔ`. Read `HANDOVER.md` first in full. First confirm an actual sign-in through the PWA's browser UI (the boot-crash was fixed and verified error-free, but a real click-through login was not). The real logo is `assets/app/yenko_logo.png` — delete the leftover FaMe-branded `assets/yenko-logo-lockup-preview.png` if you touch assets. The admin console, RBAC, and email/social auth backend are all real and substantially complete — read the "What changed" section before assuming anything is a stub; the actual remaining stubs are: mail/SMS delivery (console-only, `devCode` leak), and the native social-login SDKs on the Flutter side (server-side verification is real for Google/Apple/Facebook/X). This project has no git history — initializing one is overdue and should be treated as a priority, not deferred further. Always sanity-check claims in this file by reading the actual source before building on them, the way the last two handovers each had errors that only surfaced on re-investigation.
