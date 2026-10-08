@@ -345,6 +345,21 @@ export class AuthService {
   }
 
   /**
+   * Issues a fresh session for an account already verified by another
+   * authentication method (currently: a verified WebAuthn assertion). Does
+   * not re-check credentials — the caller is responsible for having already
+   * verified identity.
+   */
+  async issueSessionForUserId(userId) {
+    const user = await this.users.findById(userId);
+    if (!user) throw unauthorized('Account not found.');
+    if (user.status === 'suspended') throw forbidden('This account has been suspended.');
+    if (user.status === 'pending') throw forbidden('This account is waiting for approval.');
+    if (user.status !== 'active') throw unauthorized('This account is no longer active.');
+    return this.#issueSession(user);
+  }
+
+  /**
    * Both comparisons always run (against a dummy hash when the account or the
    * credential is absent) so timing does not reveal whether an account exists
    * or which credentials it has set. The credential may be either the account

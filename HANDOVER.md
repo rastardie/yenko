@@ -367,6 +367,45 @@ This was deliberately *not* built as even a partial/fake integration with a real
 - A driver can have at most one payout number for all their trips (no per-trip override) — matches how real drivers actually operate (one personal MoMo line), not flagged as a gap.
 - `markPaymentSent`/`markPaymentReceived` have no time limit — a booking's payment can be self-reported at any point after confirmation, with no reminder or expiry.
 
+## 2026-10-08 session (continued yet again) — biometric login, ported from onb
+
+User asked to replicate onb's GPS tracking and biometric login features. Investigated both via subagents before touching code; biometrics went first (smaller, no missing external dependency — GPS needs a fresh Google Maps API key from the user, not yet provided).
+
+### What was already there vs. what was missing
+
+Native Android/iOS biometric unlock was **already fully built and correctly configured** in ynk before this session — `local_auth: 3.0.2` in pubspec, `MainActivity.kt` already extending `FlutterFragmentActivity`, `USE_BIOMETRIC` already in the Android manifest, `NSFaceIDUsageDescription` already in `Info.plist`, and `BiometricService` already wired into both the login screen and profile screen. This was wrongly assumed to be missing before actually reading the code — a reminder that "replicate X" first needs confirming X doesn't already exist. Only `USE_FINGERPRINT` (a legacy Android permission, redundant on modern Android but harmless) was missing for full parity with onb, and was added.
+
+**One real pre-existing bug was found and fixed in the process**: `local_login_screen.dart`'s `_biometricSignIn` called `BiometricService.enable()` (which re-prompts the one-time enrollment ceremony AND re-persists the "enabled" flag) on **every** biometric sign-in attempt, instead of only the first time. `BiometricService` had no plain `authenticate()` method to call instead for repeat use. Added one (`authenticate({reason})` — prompts without touching the enrollment preference, returns `false` immediately without prompting if biometrics are disabled/unavailable) and fixed the login screen to call `enable()` only the first time and `authenticate()` on every subsequent sign-in.
+
+**The actual gap versus onb was the PWA/web WebAuthn (passkey) flow** — onb's biggest biometric-related addition, entirely absent from ynk. Native biometrics in ynk needed no porting at all; they were already equivalent to or better than onb's (ynk's native flow never caches the raw password in secure storage the way onb's does — it only replays what's currently typed in the form after a device check, which is a smaller trust surface).
+
+### What was built (WebAuthn / PWA passkeys)
+
+Unlike native biometric unlock (purely client-side device-lock, server never involved), a PWA has no OS-level secure storage to cache a password in, so this is a different mechanism entirely: real WebAuthn passkeys, verified server-side.
+
+**Flutter:**
+- `lib/core/security/webauthn/webauthn_bridge.dart` (contract), `webauthn_bridge_stub.dart` (non-web no-op), `webauthn_bridge_web.dart` (real browser implementation via `dart:js_interop` + `package:web: ^1.1.0`) — ported near-verbatim from onb, renamed to ynk's conventions. Selected via the same conditional-import pattern already used for `biometric_backend_io/web.dart`. Verified compiling on both the native/VM analyze target and an actual `flutter build web`.
+- `LocalAuthClient` gained `webAuthnRegistrationOptions`, `webAuthnRegistrationVerify`, `webAuthnAuthenticationOptions`, `webAuthnAuthenticationVerify` (returns a full `LocalAuthSession` — a successful assertion *is* the sign-in), `webAuthnStatus`, `webAuthnDeleteCredential`.
+- `BiometricService` extended with the web-only passkey flows (`registerWebAuthn`, `authenticateWebAuthn`), an `authClient` reference set once by `main.dart`, and `rememberAccessTokenForWebAuthnSetup` (registration needs a bearer token; authentication does not, since no account is known yet before the assertion). `initialize()` now checks WebAuthn platform-authenticator availability on web instead of always reporting unavailable.
+- `local_login_screen.dart`: a "Sign in with a passkey" button on web (branches on `kIsWeb` from the same UI slot the native biometric button already occupied), calling `authenticateWebAuthn()` directly — no username/password typed first, unlike the native replay flow.
+- `profile_screen.dart`: the existing biometric `SwitchListTile` now branches on `kIsWeb` — "enable" registers a new passkey (`registerWebAuthn`) instead of toggling a device preference; copy changes from "Face ID or fingerprint" to "passkey" language on web. `ProfileScreen` gained an `accessToken` parameter (threaded from `YenkoRootScreen`'s `session.accessToken`) since passkey registration needs it.
+
+**Backend:**
+- Migration 012: `webauthn_credentials` (credential ID, public key, counter, device type, backed-up flag, transports, optional device label) and `webauthn_challenges` (short-lived server-issued challenges, consumed exactly once, same pattern as `otp_codes`).
+- New dependency: `@simplewebauthn/server` 14.0.3 (pinned exact version, MIT, actively maintained — the same library onb uses).
+- `PostgresWebAuthnRepository`: credential CRUD, challenge issuance/consumption.
+- `WebAuthnService` (new application-layer class, not folded into `AuthService`): `registrationOptions`/`registrationVerify` (requires an existing session — registering a passkey for an already-authenticated account), `authenticationOptions`/`authenticationVerify` (no session required — the assertion itself identifies and authenticates the account, then calls a new `AuthService.issueSessionForUserId` to mint a real session), `status`, `deleteCredential`.
+- Routes: `POST /v1/auth/webauthn/register/options`, `POST /v1/auth/webauthn/register/verify` (both require an existing session), `POST /v1/auth/webauthn/authenticate/options`, `POST /v1/auth/webauthn/authenticate/verify` (both public — no account known yet), `GET /v1/auth/webauthn/status`, `DELETE /v1/auth/webauthn/credentials/:id`.
+- Dark until configured: `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGIN` env vars (documented in `.env.example`) are both required or the whole feature is simply absent from the running server (`webauthnService` stays undefined, routes 404) — same "additive, opt-in by config" pattern as the social-login providers.
+- Tests: `backend/test/webauthn-service.test.js`, 10 new unit tests against an in-memory repository double (challenge issue/consume-once, unknown-user/unknown-credential rejection, malformed-response rejection, per-user credential isolation for `status`/`deleteCredential`, and a sanity check that the underlying `@simplewebauthn/server` functions are callable). **Not covered**: SQL correctness of `PostgresWebAuthnRepository` itself — that needs the Postgres-backed integration suite (gated on `TEST_DATABASE_URL`, not available in this environment) and should be added before relying on this in production. 61/61 backend tests pass overall.
+
+### Explicit non-goals / still open
+
+- No "straight to biometric" conditional-UI autofill ceremony (onb has `isConditionalMediationAvailable`/`getAssertionConditional`/`primePasskeyAutofill` wired into the login form's text field autocomplete; ynk's bridge *implements* these methods — ported verbatim — but nothing in the login screen calls them yet). The explicit "Sign in with a passkey" button covers the core feature; the autofill polish is a smaller follow-up.
+- No UI to list/remove individual registered passkeys on the profile screen yet (`webAuthnStatus`/`webAuthnDeleteCredential` exist on the client and backend, just not surfaced in a widget) — flagged as a near-term follow-up, not done this session since the core register/sign-in loop was the priority.
+- `PostgresWebAuthnRepository` has no automated test coverage against a real database in this environment (see above) — the SQL itself was written carefully against the existing schema conventions in this codebase, but has not been run against Postgres.
+- `WEBAUTHN_RP_ID`/`WEBAUTHN_ORIGIN` must exactly match the real deployed PWA's domain or every ceremony will fail verification (this is WebAuthn's own security model, not a bug) — whoever deploys this needs to set these correctly, there is no sensible default.
+
 
 ## Suggested future-session prompt
 

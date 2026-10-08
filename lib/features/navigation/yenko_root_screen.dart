@@ -136,6 +136,7 @@ class _YenkoRootScreenState extends State<YenkoRootScreen> {
           roleLabel: widget.session == null
               ? null
               : adminTitleCase(widget.session!.role),
+          accessToken: widget.session?.accessToken,
         ),
       ),
       ?admin,

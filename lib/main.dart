@@ -5,6 +5,7 @@ import 'core/data/admin_api_client.dart';
 import 'core/data/local_api_trip_repository.dart';
 import 'core/data/local_auth_client.dart';
 import 'core/data/trip_repository.dart';
+import 'core/security/biometric_service.dart';
 import 'core/theme/app_theme.dart';
 import 'features/auth/local_landing_screen.dart';
 import 'features/startup/yenko_splash_screen.dart';
@@ -46,6 +47,10 @@ class _YenkoAppState extends State<YenkoApp> {
       _startup = _repository!.initialize();
     } else if (AppConfig.useLocalApi) {
       _authClient = LocalAuthClient(baseUrl: AppConfig.localApiBaseUrl);
+      // Web passkey registration needs a client to call the WebAuthn
+      // endpoints on; native biometric unlock never touches this. See
+      // BiometricService's class doc comment.
+      BiometricService.instance.authClient = _authClient;
     } else {
       _repository = InMemoryTripRepository();
       _startup = _repository!.initialize();

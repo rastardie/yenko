@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../../core/data/last_username_store.dart';
@@ -90,15 +91,41 @@ class _LocalLoginScreenState extends State<LocalLoginScreen> {
       );
       return;
     }
-    final verified = await BiometricService.instance.enable();
-    if (verified != BiometricEnableResult.enabled &&
-        !BiometricService.instance.isEnabled) {
+    final verified = BiometricService.instance.isEnabled
+        ? await BiometricService.instance.authenticate(
+            reason: 'Confirm your identity to sign in',
+          )
+        : await BiometricService.instance.enable() ==
+              BiometricEnableResult.enabled;
+    if (!verified) {
       setState(
         () => _errorMessage = 'Biometric verification was not completed.',
       );
       return;
     }
     await _attemptLogin(username: username, password: password);
+  }
+
+  /// Web-only passkey sign-in: a successful WebAuthn assertion *is* the
+  /// authentication, so unlike [_biometricSignIn] there is no username or
+  /// password to type first.
+  Future<void> _passkeySignIn() async {
+    setState(() {
+      _isSubmitting = true;
+      _errorMessage = null;
+    });
+    final session = await BiometricService.instance.authenticateWebAuthn();
+    if (!mounted) return;
+    if (session == null) {
+      setState(() {
+        _isSubmitting = false;
+        _errorMessage = 'Passkey sign-in was not completed.';
+      });
+      return;
+    }
+    await LastUsernameStore.write(session.displayName);
+    widget.onSignedIn(session);
+    if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   Future<void> _attemptLogin({
@@ -317,12 +344,16 @@ class _LocalLoginScreenState extends State<LocalLoginScreen> {
                                     ),
                                     onPressed: _isSubmitting
                                         ? null
-                                        : _biometricSignIn,
+                                        : (kIsWeb
+                                              ? _passkeySignIn
+                                              : _biometricSignIn),
                                     icon: const Icon(Icons.fingerprint_rounded),
                                     label: Text(
-                                      _biometricEnabled
-                                          ? 'Sign in with biometrics'
-                                          : 'Enable & sign in with biometrics',
+                                      kIsWeb
+                                          ? 'Sign in with a passkey'
+                                          : (_biometricEnabled
+                                                ? 'Sign in with biometrics'
+                                                : 'Enable & sign in with biometrics'),
                                       style: const TextStyle(
                                         fontWeight: FontWeight.w800,
                                       ),

@@ -43,7 +43,7 @@ const parseWomenOnly = (url) => {
   throw badRequest('womenOnly must be true or false.');
 };
 
-export function createHttpServer({ tripService, actorResolver, authService, adminService }) {
+export function createHttpServer({ tripService, actorResolver, authService, adminService, webauthnService }) {
   return createServer(async (request, response) => {
     const requestId = randomUUID();
     try {
@@ -116,6 +116,44 @@ export function createHttpServer({ tripService, actorResolver, authService, admi
           const body = await readJson(request);
           await authService.confirmPinReset(body);
           return sendJson(response, 200, { data: { reset: true } }, requestId);
+        }
+        if (webauthnService && request.method === 'POST' && url.pathname === '/v1/auth/webauthn/authenticate/options') {
+          const options = await webauthnService.authenticationOptions();
+          return sendJson(response, 200, { data: options }, requestId);
+        }
+        if (webauthnService && request.method === 'POST' && url.pathname === '/v1/auth/webauthn/authenticate/verify') {
+          const body = await readJson(request);
+          const result = await webauthnService.authenticationVerify({ response: body });
+          return sendJson(response, 200, { data: result }, requestId);
+        }
+        if (webauthnService && url.pathname === '/v1/auth/webauthn/register/options' && request.method === 'POST') {
+          const actor = await actorResolver.resolve(request.headers);
+          const options = await webauthnService.registrationOptions({ userId: actor.subject });
+          return sendJson(response, 200, { data: options }, requestId);
+        }
+        if (webauthnService && url.pathname === '/v1/auth/webauthn/register/verify' && request.method === 'POST') {
+          const actor = await actorResolver.resolve(request.headers);
+          const body = await readJson(request);
+          const result = await webauthnService.registrationVerify({
+            userId: actor.subject,
+            response: body,
+            deviceLabel: body.deviceLabel,
+          });
+          return sendJson(response, 200, { data: result }, requestId);
+        }
+        if (webauthnService && url.pathname === '/v1/auth/webauthn/status' && request.method === 'GET') {
+          const actor = await actorResolver.resolve(request.headers);
+          const result = await webauthnService.status({ userId: actor.subject });
+          return sendJson(response, 200, { data: result }, requestId);
+        }
+        const webauthnDeleteMatch = url.pathname.match(/^\/v1\/auth\/webauthn\/credentials\/([^/]+)$/);
+        if (webauthnService && webauthnDeleteMatch && request.method === 'DELETE') {
+          const actor = await actorResolver.resolve(request.headers);
+          await webauthnService.deleteCredential({
+            userId: actor.subject,
+            credentialId: decodeURIComponent(webauthnDeleteMatch[1]),
+          });
+          return sendJson(response, 200, { data: { deleted: true } }, requestId);
         }
       }
       if (authService && request.method === 'GET' && url.pathname === '/v1/me') {

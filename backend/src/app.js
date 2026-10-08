@@ -6,11 +6,13 @@ import { createPostgresPool } from './infrastructure/postgres.js';
 import { PostgresTripRepository } from './infrastructure/postgres-trip-repository.js';
 import { PostgresUserRepository } from './infrastructure/postgres-user-repository.js';
 import { PostgresAdminRepository } from './infrastructure/postgres-admin-repository.js';
+import { PostgresWebAuthnRepository } from './infrastructure/postgres-webauthn-repository.js';
 import { ConsoleMailSender } from './infrastructure/mail/console-mail-sender.js';
 import { SocialProviderRegistry } from './infrastructure/social/social-provider-registry.js';
 import { AdminService } from './application/admin-service.js';
 import { TripService } from './application/trip-service.js';
 import { AuthService } from './application/auth-service.js';
+import { WebAuthnService } from './application/webauthn-service.js';
 import { createHttpServer } from './interfaces/http-server.js';
 
 const seedTrips = (now = new Date()) => [
@@ -32,7 +34,7 @@ const seedTrips = (now = new Date()) => [
   },
 ];
 
-export function createApp({ environment = 'development', actorResolver, tripRepository, authService, adminService } = {}) {
+export function createApp({ environment = 'development', actorResolver, tripRepository, authService, adminService, webauthnService } = {}) {
   const repository = tripRepository ?? new InMemoryTripRepository(seedTrips());
   const resolver = actorResolver ?? new DevelopmentActorResolver();
   if (
@@ -46,6 +48,7 @@ export function createApp({ environment = 'development', actorResolver, tripRepo
     actorResolver: resolver,
     authService,
     adminService,
+    webauthnService,
   });
 }
 
@@ -57,6 +60,8 @@ export async function createRuntimeApp({
   signupApproval = 'none',
   oidcIssuer, oidcAudience, oidcRolesClaim,
   enableEmailMailer = false,
+  webauthnRpID,
+  webauthnOrigin,
   env = process.env,
 } = {}) {
   const usesPostgres = Boolean(databaseUrl);
@@ -72,6 +77,7 @@ export async function createRuntimeApp({
   let actorResolver;
   let authService;
   let adminService;
+  let webauthnService;
   if (authMode === 'oidc') {
     actorResolver = new OidcActorResolver({ issuer: oidcIssuer, audience: oidcAudience, rolesClaim: oidcRolesClaim });
   } else if (authMode === 'local-pin') {
@@ -93,12 +99,25 @@ export async function createRuntimeApp({
       userRepository,
       authService,
     });
+    // WebAuthn (PWA passkeys) is only meaningful once there is a real user
+    // repository and session issuer to verify against; dark until an
+    // rpID/origin pair is configured (both required — see server.js).
+    if (webauthnRpID && webauthnOrigin) {
+      webauthnService = new WebAuthnService({
+        webauthnRepository: new PostgresWebAuthnRepository({ pool }),
+        userRepository,
+        authService,
+        rpName: 'YɛnKɔ',
+        rpID: webauthnRpID,
+        origin: webauthnOrigin,
+      });
+    }
   } else {
     actorResolver = new DevelopmentActorResolver();
   }
 
   return {
-    server: createApp({ environment, actorResolver, tripRepository: repository, authService, adminService }),
+    server: createApp({ environment, actorResolver, tripRepository: repository, authService, adminService, webauthnService }),
     async close() { await repository.close?.(); },
   };
 }

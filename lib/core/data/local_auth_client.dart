@@ -201,6 +201,112 @@ class LocalAuthClient {
     }
   }
 
+  // --- WebAuthn (PWA passkeys) ---
+  //
+  // These only make sense on the web client, where there is no OS-level
+  // secure storage to cache a password in (unlike native biometric unlock,
+  // which never leaves the device — see BiometricService). Every
+  // registration/authentication ceremony here is verified by the backend
+  // with @simplewebauthn/server; see migration 012 and HANDOVER.md.
+
+  /// Fetches server-generated WebAuthn registration options for the
+  /// signed-in account, to pass into the browser's
+  /// `navigator.credentials.create()` call.
+  Future<Map<String, dynamic>> webAuthnRegistrationOptions(
+    String accessToken,
+  ) async {
+    final body = await _postJson(
+      path: '/v1/auth/webauthn/register/options',
+      payload: const {},
+      accessToken: accessToken,
+    );
+    return Map<String, dynamic>.from(body['data'] as Map);
+  }
+
+  /// Sends the browser's attestation response back to the server to
+  /// complete passkey registration for the signed-in account.
+  Future<void> webAuthnRegistrationVerify(
+    String accessToken,
+    Map<String, dynamic> attestation, {
+    String? deviceLabel,
+  }) async {
+    await _postJson(
+      path: '/v1/auth/webauthn/register/verify',
+      payload: {
+        ...attestation,
+        if (deviceLabel != null && deviceLabel.isNotEmpty)
+          'deviceLabel': deviceLabel,
+      },
+      accessToken: accessToken,
+    );
+  }
+
+  /// Fetches server-generated WebAuthn authentication options, to pass into
+  /// the browser's `navigator.credentials.get()` call. No account is known
+  /// yet at this point — the assertion itself identifies the credential.
+  Future<Map<String, dynamic>> webAuthnAuthenticationOptions() async {
+    final body = await _postJson(
+      path: '/v1/auth/webauthn/authenticate/options',
+      payload: const {},
+    );
+    return Map<String, dynamic>.from(body['data'] as Map);
+  }
+
+  /// Sends the browser's assertion response to the server; on success this
+  /// *is* the sign-in — the server returns a full session, same as [login].
+  Future<LocalAuthSession> webAuthnAuthenticationVerify(
+    Map<String, dynamic> assertion,
+  ) async {
+    final body = await _postJson(
+      path: '/v1/auth/webauthn/authenticate/verify',
+      payload: assertion,
+    );
+    return _sessionFromData(Map<String, dynamic>.from(body['data'] as Map));
+  }
+
+  /// Lists the signed-in account's registered passkeys (id/label/dates
+  /// only — never the credential material itself).
+  Future<List<Map<String, dynamic>>> webAuthnStatus(
+    String accessToken,
+  ) async {
+    final body = await _getJson(
+      path: '/v1/auth/webauthn/status',
+      accessToken: accessToken,
+    );
+    final data = Map<String, dynamic>.from(body['data'] as Map);
+    return (data['credentials'] as List? ?? const [])
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  /// Removes one of the signed-in account's own registered passkeys.
+  Future<void> webAuthnDeleteCredential(
+    String accessToken,
+    String credentialId,
+  ) async {
+    await _request(
+      method: 'DELETE',
+      path: '/v1/auth/webauthn/credentials/${Uri.encodeComponent(credentialId)}',
+      accessToken: accessToken,
+    );
+  }
+
+  LocalAuthSession _sessionFromData(Map<String, dynamic> data) {
+    final user = Map<String, dynamic>.from(data['user'] as Map);
+    List<String> strings(Object? value) => (value as List? ?? const [])
+        .map((item) => item.toString())
+        .toList(growable: false);
+    return LocalAuthSession(
+      accessToken: data['accessToken'] as String,
+      role: user['role'] as String,
+      displayName: user['displayName'] as String,
+      userId: user['id'] as String? ?? '',
+      roles: strings(user['roles']),
+      permissions: strings(user['permissions']),
+    );
+  }
+
   Future<LocalAuthSession> _authRequest({
     required String path,
     required Map<String, dynamic> payload,
@@ -242,18 +348,7 @@ class LocalAuthClient {
     }
 
     final data = Map<String, dynamic>.from(body['data'] as Map);
-    final user = Map<String, dynamic>.from(data['user'] as Map);
-    List<String> strings(Object? value) => (value as List? ?? const [])
-        .map((item) => item.toString())
-        .toList(growable: false);
-    return LocalAuthSession(
-      accessToken: data['accessToken'] as String,
-      role: user['role'] as String,
-      displayName: user['displayName'] as String,
-      userId: user['id'] as String? ?? '',
-      roles: strings(user['roles']),
-      permissions: strings(user['permissions']),
-    );
+    return _sessionFromData(data);
   }
 
   Future<Map<String, dynamic>> _postJson({
@@ -286,6 +381,53 @@ class LocalAuthClient {
       throw LocalAuthException(message ?? 'The request failed.');
     }
     return body;
+  }
+
+  Future<Map<String, dynamic>> _getJson({
+    required String path,
+    String? accessToken,
+  }) => _request(method: 'GET', path: path, accessToken: accessToken);
+
+  Future<Map<String, dynamic>> _request({
+    required String method,
+    required String path,
+    Map<String, dynamic>? payload,
+    String? accessToken,
+  }) async {
+    final uri = _baseUri.resolve(path);
+    final headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+    };
+    final body = payload == null ? null : jsonEncode(payload);
+    final http.Response response;
+    switch (method) {
+      case 'GET':
+        response = await _client
+            .get(uri, headers: headers)
+            .timeout(const Duration(seconds: 10));
+      case 'DELETE':
+        response = await _client
+            .delete(uri, headers: headers, body: body)
+            .timeout(const Duration(seconds: 10));
+      default:
+        throw StateError('Unsupported HTTP method: $method');
+    }
+    final raw = utf8.decode(response.bodyBytes);
+    final decoded = raw.isEmpty ? <String, dynamic>{} : jsonDecode(raw);
+    if (decoded is! Map) {
+      throw const LocalAuthException(
+        'The local API returned an invalid response.',
+      );
+    }
+    final responseBody = Map<String, dynamic>.from(decoded);
+    if (response.statusCode >= 400) {
+      final error = responseBody['error'];
+      final message = error is Map ? error['message']?.toString() : null;
+      throw LocalAuthException(message ?? 'The request failed.');
+    }
+    return responseBody;
   }
 
   void dispose() {

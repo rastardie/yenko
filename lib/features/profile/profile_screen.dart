@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../../core/data/trip_repository.dart';
@@ -12,12 +13,17 @@ class ProfileScreen extends StatefulWidget {
     required this.repository,
     this.displayName,
     this.roleLabel,
+    this.accessToken,
   });
   final TripRepository repository;
 
   /// The signed-in person's name and role; null in mock mode.
   final String? displayName;
   final String? roleLabel;
+
+  /// The signed-in session's bearer token, needed on web to register a new
+  /// passkey. Null in mock mode or on native, where it is unused.
+  final String? accessToken;
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -48,6 +54,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _changeBiometricEnrollment(bool enable) async {
     setState(() => _biometricLoading = true);
+    if (kIsWeb) {
+      if (!enable) {
+        // There is no single "disable" action for passkeys the way there is
+        // for a native device preference — remove individual passkeys from
+        // the list below instead. Flipping the switch off here just hides
+        // the opt-in state locally; it does not revoke anything server-side.
+        await BiometricService.instance.disable();
+        await _loadBiometricState();
+        return;
+      }
+      final token = widget.accessToken;
+      if (token == null) {
+        setState(() => _biometricLoading = false);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sign in again to add a passkey.')),
+        );
+        return;
+      }
+      BiometricService.instance.rememberAccessTokenForWebAuthnSetup(token);
+      final result = await BiometricService.instance.registerWebAuthn();
+      await _loadBiometricState();
+      if (!mounted) return;
+      final message = switch (result) {
+        BiometricEnableResult.enabled => 'Passkey added for this device.',
+        BiometricEnableResult.unavailable =>
+          'This browser does not support passkeys.',
+        BiometricEnableResult.verificationFailed =>
+          'Passkey setup was not completed.',
+      };
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+      return;
+    }
     if (!enable) {
       await BiometricService.instance.disable();
       await _loadBiometricState();
@@ -293,23 +334,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         Icons.fingerprint_rounded,
                         color: YenkoColors.gold,
                       ),
-                      title: const Text(
-                        'Biometric unlock',
-                        style: TextStyle(fontWeight: FontWeight.w900),
+                      title: Text(
+                        kIsWeb ? 'Passkey sign-in' : 'Biometric unlock',
+                        style: const TextStyle(fontWeight: FontWeight.w900),
                       ),
-                      subtitle: const Text(
-                        'Optional Face ID or fingerprint unlock for this device.',
+                      subtitle: Text(
+                        kIsWeb
+                            ? 'Add a passkey to sign in on this device without a password.'
+                            : 'Optional Face ID or fingerprint unlock for this device.',
                       ),
                     )
                   : ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.fingerprint_outlined),
-                      title: const Text(
-                        'Biometric unlock unavailable',
-                        style: TextStyle(fontWeight: FontWeight.w900),
+                      title: Text(
+                        kIsWeb
+                            ? 'Passkeys unavailable'
+                            : 'Biometric unlock unavailable',
+                        style: const TextStyle(fontWeight: FontWeight.w900),
                       ),
-                      subtitle: const Text(
-                        'Enroll Face ID or a fingerprint in device settings to enable it.',
+                      subtitle: Text(
+                        kIsWeb
+                            ? 'This browser or device does not support passkeys.'
+                            : 'Enroll Face ID or a fingerprint in device settings to enable it.',
                       ),
                     ),
             ),

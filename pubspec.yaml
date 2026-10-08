@@ -37,6 +37,7 @@ dependencies:
   local_auth: 3.0.2
   shared_preferences: 2.3.2
   http: ^1.6.0
+  web: ^1.1.0
 
 dev_dependencies:
   flutter_test:

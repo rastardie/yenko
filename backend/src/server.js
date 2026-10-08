@@ -13,6 +13,8 @@ const runtime = await createRuntimeApp({
   oidcAudience: process.env.OIDC_AUDIENCE,
   oidcRolesClaim: process.env.OIDC_ROLES_CLAIM,
   enableEmailMailer: process.env.MAIL_ENABLED === 'true',
+  webauthnRpID: process.env.WEBAUTHN_RP_ID,
+  webauthnOrigin: process.env.WEBAUTHN_ORIGIN,
   env: process.env,
 });
 
