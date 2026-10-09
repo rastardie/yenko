@@ -49,6 +49,16 @@
 	</dict>
 	<key>NSFaceIDUsageDescription</key>
 	<string>YɛnKɔ uses Face ID only when you choose to enable biometric unlock.</string>
+	<!-- Live location sharing while a driver's trip is under way. See
+	     migration 013, driver_tracking_screen.dart, and HANDOVER.md. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>YɛnKɔ uses your location to share your live position with riders while you are driving a trip.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>YɛnKɔ uses your location to keep sharing your live position with riders if you briefly switch apps during a trip.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

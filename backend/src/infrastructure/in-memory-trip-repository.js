@@ -299,4 +299,41 @@ export class InMemoryTripRepository {
       read: false, createdAt: new Date().toISOString(),
     });
   }
+
+  /**
+   * Writes one GPS fix to every confirmed booking on this trip at once,
+   * mirroring the Postgres repository's single-UPDATE behaviour.
+   */
+  async updateLiveLocation({ tripId, driverId, latitude, longitude, speedKmh, heading }) {
+    const trip = this.#trips.get(tripId);
+    if (!trip || trip.driver.id !== driverId) return { reason: 'trip_not_found' };
+    const confirmed = [...this.#reservations.values()].filter(
+      (reservation) => reservation.tripId === tripId && reservation.status === 'confirmed',
+    );
+    if (!confirmed.length) return { reason: 'trip_not_active' };
+    const updatedAt = new Date().toISOString();
+    for (const reservation of confirmed) {
+      reservation.liveLatitude = latitude;
+      reservation.liveLongitude = longitude;
+      reservation.liveSpeedKmh = speedKmh;
+      reservation.liveHeading = heading;
+      reservation.liveUpdatedAt = updatedAt;
+    }
+    return { updatedReservationIds: confirmed.map((reservation) => reservation.id) };
+  }
+
+  /** The live GPS fix last reported for this passenger's own confirmed booking, if any. */
+  async getLiveLocation({ reservationId, passengerId }) {
+    const reservation = this.#reservations.get(reservationId);
+    if (!reservation || reservation.passengerId !== passengerId) {
+      return { reason: 'reservation_not_found' };
+    }
+    return {
+      latitude: reservation.liveLatitude ?? null,
+      longitude: reservation.liveLongitude ?? null,
+      speedKmh: reservation.liveSpeedKmh ?? null,
+      heading: reservation.liveHeading ?? null,
+      updatedAt: reservation.liveUpdatedAt ?? null,
+    };
+  }
 }

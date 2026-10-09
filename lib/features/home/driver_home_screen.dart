@@ -6,6 +6,7 @@ import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/sign_out.dart';
 import '../../shared/widgets/yenko_showcase_widgets.dart';
 import '../../shared/widgets/yenko_widgets.dart';
+import '../live_map/driver_tracking_screen.dart';
 import 'passenger_home_screen.dart' show firstNameOf;
 
 /// The driver-facing home/dashboard screen. Shown instead of
@@ -68,6 +69,9 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       final awaitingPayment = widget.repository.confirmedDriverReservations
           .where((booking) => booking.paymentStatus != 'driver_confirmed_received')
           .toList();
+      final confirmedTripIds = widget.repository.confirmedDriverReservations
+          .map((booking) => booking.trip.id)
+          .toSet();
       final activeSummaries = summaries
           .where(
             (summary) =>
@@ -254,7 +258,11 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                   message: 'Offer a ride to start taking passenger requests.',
                 ),
               for (final summary in activeSummaries) ...[
-                _DriverTripCard(summary: summary),
+                _DriverTripCard(
+                  summary: summary,
+                  repository: widget.repository,
+                  canShareLocation: confirmedTripIds.contains(summary.trip.id),
+                ),
                 const SizedBox(height: 12),
               ],
             ],
@@ -345,8 +353,17 @@ class _StatCard extends StatelessWidget {
 }
 
 class _DriverTripCard extends StatelessWidget {
-  const _DriverTripCard({required this.summary});
+  const _DriverTripCard({
+    required this.summary,
+    required this.repository,
+    required this.canShareLocation,
+  });
   final DriverTripSummary summary;
+  final TripRepository repository;
+
+  /// True once at least one booking on this trip is confirmed — there is
+  /// nobody to share a position with before that. See migration 013.
+  final bool canShareLocation;
 
   @override
   Widget build(BuildContext context) {
@@ -404,6 +421,24 @@ class _DriverTripCard extends StatelessWidget {
               ),
             ],
           ),
+          if (canShareLocation) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => DriverTrackingScreen(
+                      repository: repository,
+                      trip: trip,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.my_location_rounded, size: 16),
+                label: const Text('Share live location'),
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -5,7 +5,7 @@ export class InMemoryUserRepository {
   #users = new Map();
   #groups = new Map([
     ['Riders', { id: randomUUID(), role: 'passenger', permissions: ['reservations:book', 'reservations:cancel_own', 'reservations:view_own', 'reservations:report_payment'] }],
-    ['Drivers', { id: randomUUID(), role: 'driver', permissions: ['trips:offer', 'trips:manage_own', 'trips:confirm_payment'] }],
+    ['Drivers', { id: randomUUID(), role: 'driver', permissions: ['trips:offer', 'trips:manage_own', 'trips:confirm_payment', 'trips:share_location'] }],
     ['Admins', { id: randomUUID(), role: 'admin', permissions: ['users:read', 'groups:read'] }],
     ['Super Admins', { id: randomUUID(), role: 'super_admin', permissions: ['users:read', 'groups:read', 'audit:read'] }],
   ]);

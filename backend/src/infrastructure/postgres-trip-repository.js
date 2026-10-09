@@ -707,4 +707,63 @@ export class PostgresTripRepository {
       createdAt: new Date(row.created_at).toISOString(),
     });
   }
+
+  /**
+   * Writes one GPS fix to every confirmed booking on this trip at once —
+   * the driver's position is the same for every passenger riding with
+   * them. A trip with zero confirmed bookings has nobody to report
+   * location to, so that is treated as `trip_not_active` rather than
+   * silently succeeding.
+   */
+  async updateLiveLocation({ tripId, driverId, latitude, longitude, speedKmh, heading }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const trip = await client.query(
+        `SELECT id FROM trips WHERE id = $1 AND driver_id = $2 FOR UPDATE`,
+        [tripId, driverId],
+      );
+      if (!trip.rowCount) {
+        await client.query('ROLLBACK');
+        return { reason: 'trip_not_found' };
+      }
+      const updated = await client.query(
+        `UPDATE reservations
+         SET live_latitude = $2, live_longitude = $3, live_speed_kmh = $4,
+             live_heading = $5, live_updated_at = now()
+         WHERE trip_id = $1 AND status = 'confirmed'
+         RETURNING id`,
+        [tripId, latitude, longitude, speedKmh, heading],
+      );
+      if (!updated.rowCount) {
+        await client.query('ROLLBACK');
+        return { reason: 'trip_not_active' };
+      }
+      await client.query('COMMIT');
+      return { updatedReservationIds: updated.rows.map((row) => row.id) };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** The live GPS fix last reported for this passenger's own confirmed booking, if any. */
+  async getLiveLocation({ reservationId, passengerId }) {
+    const result = await this.pool.query(
+      `SELECT live_latitude, live_longitude, live_speed_kmh, live_heading, live_updated_at
+       FROM reservations WHERE id = $1 AND passenger_id = $2`,
+      [reservationId, passengerId],
+    );
+    if (!result.rowCount) return { reason: 'reservation_not_found' };
+    const row = result.rows[0];
+    return {
+      latitude: row.live_latitude,
+      longitude: row.live_longitude,
+      speedKmh: row.live_speed_kmh,
+      heading: row.live_heading,
+      updatedAt: row.live_updated_at ? new Date(row.live_updated_at).toISOString() : null,
+    };
+  }
 }

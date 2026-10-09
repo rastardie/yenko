@@ -4,6 +4,7 @@ import '../../core/data/trip_repository.dart';
 import '../../core/models/trip.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/yenko_showcase_widgets.dart';
+import '../live_map/rider_tracking_screen.dart';
 
 class TripTrackingScreen extends StatelessWidget {
   const TripTrackingScreen({super.key, required this.repository});
@@ -278,6 +279,28 @@ class _BookingCard extends StatelessWidget {
                   ),
                   child: const Text(
                     'View',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11),
+                  ),
+                ),
+              if (confirmed)
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => RiderTrackingScreen(
+                        repository: repository,
+                        booking: booking,
+                      ),
+                    ),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFF9B900),
+                    foregroundColor: YenkoColors.charcoal,
+                    minimumSize: const Size(56, 34),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                  icon: const Icon(Icons.my_location_rounded, size: 14),
+                  label: const Text(
+                    'Track',
                     style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11),
                   ),
                 ),

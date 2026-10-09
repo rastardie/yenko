@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { badRequest, conflict, forbidden, notFound } from '../domain/errors.js';
-import { toPublicTrip, validateSeatRequest, validateTripDraft } from '../domain/trip.js';
+import { toPublicTrip, validateLiveLocation, validateSeatRequest, validateTripDraft } from '../domain/trip.js';
 
 const requireActor = (actor) => {
   if (!actor || !actor.subject) throw forbidden('An authenticated actor is required.');
@@ -196,6 +196,41 @@ export class TripService {
     if (result.reason === 'reservation_not_confirmed') {
       throw conflict('Only a confirmed booking can be marked as payment received.');
     }
+    return result;
+  }
+
+  /**
+   * Driver self-reports a live GPS fix while one of their trips is under
+   * way. Applied to every confirmed booking on that trip at once — the
+   * driver's position is the same for every passenger riding with them.
+   */
+  async updateLiveLocation({ actor, tripId, input }) {
+    requireRole(actor, 'driver', 'trips:share_location');
+    const fix = validateLiveLocation(input);
+    const result = await this.tripRepository.updateLiveLocation({
+      tripId,
+      driverId: actor.subject,
+      ...fix,
+    });
+    if (result.reason === 'trip_not_found') throw notFound('Trip not found.');
+    if (result.reason === 'trip_not_active') {
+      throw conflict('Only a trip with at least one confirmed booking can share location.');
+    }
+    return result;
+  }
+
+  /**
+   * A passenger reads the live location last reported for their own
+   * confirmed booking. Returns null fields if the driver has not reported
+   * one yet (e.g. the ride has not started).
+   */
+  async getLiveLocation({ actor, reservationId }) {
+    requireRole(actor, 'passenger', 'reservations:view_own');
+    const result = await this.tripRepository.getLiveLocation({
+      reservationId,
+      passengerId: actor.subject,
+    });
+    if (result.reason === 'reservation_not_found') throw notFound('Booking not found.');
     return result;
   }
 }

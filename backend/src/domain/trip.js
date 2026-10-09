@@ -46,6 +46,27 @@ export function validateSeatRequest(input) {
   return { seats: boundedInteger(input.seats, 'seats', 1, 4) };
 }
 
+const boundedNumber = (value, field, minimum, maximum, { optional = false } = {}) => {
+  if (optional && (value === undefined || value === null)) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
+    throw badRequest(`${field} must be a number from ${minimum} to ${maximum}.`);
+  }
+  return value;
+};
+
+/** A single GPS fix reported by the driver's device while a trip is under way. */
+export function validateLiveLocation(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw badRequest('A JSON location payload is required.');
+  }
+  return {
+    latitude: boundedNumber(input.latitude, 'latitude', -90, 90),
+    longitude: boundedNumber(input.longitude, 'longitude', -180, 180),
+    speedKmh: boundedNumber(input.speedKmh, 'speedKmh', 0, 300, { optional: true }),
+    heading: boundedNumber(input.heading, 'heading', 0, 360, { optional: true }),
+  };
+}
+
 export function toPublicTrip(trip) {
   return {
     id: trip.id,

@@ -232,3 +232,35 @@ class DriverTripSummary {
   final int bookingCount;
   int get expectedFare => seatsBooked * trip.pricePerSeat;
 }
+
+/// The most recent GPS fix reported by the driver for a confirmed booking.
+/// All fields are null until the driver has posted at least one fix for
+/// that trip — see migration 013 and HANDOVER.md. There is no websocket
+/// layer; the rider's app polls for this.
+class LiveLocation {
+  const LiveLocation({
+    this.latitude,
+    this.longitude,
+    this.speedKmh,
+    this.heading,
+    this.updatedAt,
+  });
+
+  factory LiveLocation.fromApi(Map<String, dynamic> json) => LiveLocation(
+    latitude: (json['latitude'] as num?)?.toDouble(),
+    longitude: (json['longitude'] as num?)?.toDouble(),
+    speedKmh: (json['speedKmh'] as num?)?.toDouble(),
+    heading: (json['heading'] as num?)?.toDouble(),
+    updatedAt: json['updatedAt'] == null
+        ? null
+        : DateTime.parse(json['updatedAt'] as String).toLocal(),
+  );
+
+  final double? latitude;
+  final double? longitude;
+  final double? speedKmh;
+  final double? heading;
+  final DateTime? updatedAt;
+
+  bool get hasFix => latitude != null && longitude != null;
+}

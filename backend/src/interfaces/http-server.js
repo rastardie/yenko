@@ -291,6 +291,25 @@ export function createHttpServer({ tripService, actorResolver, authService, admi
           data: { ...result.reservation, idempotentReplay: result.replayed },
         }, requestId);
       }
+      const liveLocationMatch = url.pathname.match(/^\/v1\/driver\/trips\/([^/]+)\/location$/);
+      if (request.method === 'POST' && liveLocationMatch) {
+        const actor = await actorResolver.resolve(request.headers);
+        const result = await tripService.updateLiveLocation({
+          actor,
+          tripId: decodeURIComponent(liveLocationMatch[1]),
+          input: await readJson(request),
+        });
+        return sendJson(response, 200, { data: result }, requestId);
+      }
+      const liveLocationReadMatch = url.pathname.match(/^\/v1\/me\/reservations\/([^/]+)\/location$/);
+      if (request.method === 'GET' && liveLocationReadMatch) {
+        const actor = await actorResolver.resolve(request.headers);
+        const result = await tripService.getLiveLocation({
+          actor,
+          reservationId: decodeURIComponent(liveLocationReadMatch[1]),
+        });
+        return sendJson(response, 200, { data: result }, requestId);
+      }
       const cancellationMatch = url.pathname.match(/^\/v1\/me\/reservations\/([^/]+)$/);
       if (request.method === 'DELETE' && cancellationMatch) {
         const actor = await actorResolver.resolve(request.headers);

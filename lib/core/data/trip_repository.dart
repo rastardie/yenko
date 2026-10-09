@@ -64,6 +64,24 @@ abstract interface class TripRepository implements Listenable {
   Future<void> markPaymentReceived(Booking booking);
 
   Future<void> markNotificationsRead();
+
+  /// Driver self-reports a live GPS fix while one of their trips is under
+  /// way. Applied to every confirmed booking on that trip at once. Throws
+  /// [StateError] if the signed-in account is not that trip's driver, or
+  /// the trip has no confirmed booking yet.
+  Future<void> shareLiveLocation({
+    required String tripId,
+    required double latitude,
+    required double longitude,
+    double? speedKmh,
+    double? heading,
+  });
+
+  /// The live GPS fix last reported for the signed-in passenger's own
+  /// confirmed [booking], or an empty [LiveLocation] if the driver has not
+  /// reported one yet. Throws [StateError] if the booking is not the
+  /// caller's own.
+  Future<LiveLocation> fetchLiveLocation(Booking booking);
 }
 
 class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
@@ -335,5 +353,46 @@ class InMemoryTripRepository extends ChangeNotifier implements TripRepository {
       _notifications[index] = _notifications[index].copyWith(read: true);
     }
     notifyListeners();
+  }
+
+  final Map<String, LiveLocation> _liveLocationByBookingId = {};
+
+  @override
+  Future<void> shareLiveLocation({
+    required String tripId,
+    required double latitude,
+    required double longitude,
+    double? speedKmh,
+    double? heading,
+  }) async {
+    final confirmed = _bookings.where(
+      (booking) =>
+          booking.trip.id == tripId &&
+          booking.status == 'confirmed' &&
+          booking.trip.driverName == 'You',
+    );
+    if (confirmed.isEmpty) {
+      throw StateError(
+        'Only a trip with at least one confirmed booking can share location.',
+      );
+    }
+    final fix = LiveLocation(
+      latitude: latitude,
+      longitude: longitude,
+      speedKmh: speedKmh,
+      heading: heading,
+      updatedAt: DateTime.now(),
+    );
+    for (final booking in confirmed) {
+      _liveLocationByBookingId[booking.id] = fix;
+    }
+    notifyListeners();
+  }
+
+  @override
+  Future<LiveLocation> fetchLiveLocation(Booking booking) async {
+    final exists = _bookings.any((item) => item.id == booking.id);
+    if (!exists) throw StateError('Booking not found.');
+    return _liveLocationByBookingId[booking.id] ?? const LiveLocation();
   }
 }

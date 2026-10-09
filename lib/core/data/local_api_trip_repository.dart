@@ -229,6 +229,44 @@ class LocalApiTripRepository extends ChangeNotifier implements TripRepository {
     notifyListeners();
   }
 
+  @override
+  Future<void> shareLiveLocation({
+    required String tripId,
+    required double latitude,
+    required double longitude,
+    double? speedKmh,
+    double? heading,
+  }) async {
+    if (!_isDriver) {
+      throw StateError('Only a driver account can share live location.');
+    }
+    await _request(
+      method: 'POST',
+      path: '/v1/driver/trips/${Uri.encodeComponent(tripId)}/location',
+      payload: {
+        'latitude': latitude,
+        'longitude': longitude,
+        if (speedKmh != null) 'speedKmh': speedKmh,
+        if (heading != null) 'heading': heading,
+      },
+      headers: _authHeaders,
+    );
+  }
+
+  @override
+  Future<LiveLocation> fetchLiveLocation(Booking booking) async {
+    if (!_isPassenger) {
+      throw StateError('Only a passenger account can read live location.');
+    }
+    final body = await _request(
+      method: 'GET',
+      path:
+          '/v1/me/reservations/${Uri.encodeComponent(booking.id)}/location',
+      headers: _authHeaders,
+    );
+    return LiveLocation.fromApi(Map<String, dynamic>.from(body['data'] as Map));
+  }
+
   Future<void> _loadAll({required bool notify}) async {
     final tripsResponse = await _request(method: 'GET', path: '/v1/trips');
     final reservationsResponse = _isPassenger
