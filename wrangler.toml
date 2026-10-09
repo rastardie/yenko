@@ -1,0 +1,18 @@
+# Cloudflare Workers static-assets config for the YɛnKɔ PWA.
+#
+# Cloudflare's newer "Workers & Pages" project-creation flow deploys via
+# Wrangler rather than the classic Pages build-output pipeline, even for a
+# plain static site. This config tells Wrangler there is no Worker script
+# to run — just a directory of static files (Flutter's `build web` output)
+# to serve, with SPA-style fallback to index.html so client-side routing
+# still works.
+#
+# Build command (set in the Cloudflare dashboard): bash tool/build-cloudflare-pages.sh
+# Deploy command (set in the Cloudflare dashboard): npx wrangler deploy
+
+name = "yenko"
+compatibility_date = "2026-10-09"
+
+[assets]
+directory = "build/web"
+not_found_handling = "single-page-application"
