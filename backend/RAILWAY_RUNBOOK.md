@@ -6,10 +6,13 @@
 |---|---|---|
 | `DATABASE_URL` | Railway PostgreSQL reference | Railway PostgreSQL reference |
 | `NODE_ENV` | `development` | `production` |
-| `AUTH_MODE` | `development-header` for test data only | `oidc` |
-| `OIDC_ISSUER` | not required | selected identity-provider issuer |
-| `OIDC_AUDIENCE` | not required | `yenko-api` or selected API audience |
-| `OIDC_ROLES_CLAIM` | optional | role-claim name, default `roles` |
+| `AUTH_MODE` | `development-header` for test data only | `local-pin` or `oidc` |
+| `JWT_SECRET` | any value | a long random value — never the placeholder |
+| `OIDC_ISSUER` | not required | required only if `AUTH_MODE=oidc` |
+| `OIDC_AUDIENCE` | not required | required only if `AUTH_MODE=oidc`, e.g. `yenko-api` |
+| `OIDC_ROLES_CLAIM` | optional | optional, default `roles` |
+| `CORS_ORIGINS` | not required (web client is usually run against `localhost` and does not need this) | the deployed PWA's exact HTTPS origin(s), comma-separated, no wildcard — e.g. `https://yenko.pages.dev`. Required for the Cloudflare Pages web client to call this API at all; irrelevant to native Android/iOS. |
+| `WEBAUTHN_RP_ID` / `WEBAUTHN_ORIGIN` | `localhost` / `http://localhost:8765` for local web testing | the PWA's bare domain / full origin — in practice the same domain as `CORS_ORIGINS`, just without the scheme for `WEBAUTHN_RP_ID`. Both required together to enable passkeys; dark otherwise. |
 | `PORT` | injected by Railway | injected by Railway |
 
 ## Release procedure

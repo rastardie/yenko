@@ -43,9 +43,36 @@ const parseWomenOnly = (url) => {
   throw badRequest('womenOnly must be true or false.');
 };
 
-export function createHttpServer({ tripService, actorResolver, authService, adminService, webauthnService }) {
+/**
+ * The Flutter web/PWA build is served from a different origin than this
+ * API (Cloudflare Pages vs Railway), so without CORS headers every browser
+ * request would be rejected before this code ever ran. `allowedOrigins` is
+ * an exact-match allow-list — no wildcard, no origin reflection — read from
+ * the comma-separated `CORS_ORIGINS` env var. Native Android/iOS HTTP
+ * clients are not browsers and are never subject to CORS, so this only
+ * affects the web client.
+ */
+const applyCors = (request, response, allowedOrigins) => {
+  const origin = request.headers.origin;
+  if (!origin || !allowedOrigins.includes(origin)) return;
+  response.setHeader('access-control-allow-origin', origin);
+  response.setHeader('vary', 'Origin');
+  response.setHeader('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  response.setHeader(
+    'access-control-allow-headers',
+    'Content-Type, Authorization, Idempotency-Key',
+  );
+  response.setHeader('access-control-max-age', '600');
+};
+
+export function createHttpServer({ tripService, actorResolver, authService, adminService, webauthnService, corsOrigins = [] }) {
   return createServer(async (request, response) => {
     const requestId = randomUUID();
+    applyCors(request, response, corsOrigins);
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204);
+      return response.end();
+    }
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
       if (request.method === 'GET' && url.pathname === '/health/live') {

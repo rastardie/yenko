@@ -34,7 +34,7 @@ const seedTrips = (now = new Date()) => [
   },
 ];
 
-export function createApp({ environment = 'development', actorResolver, tripRepository, authService, adminService, webauthnService } = {}) {
+export function createApp({ environment = 'development', actorResolver, tripRepository, authService, adminService, webauthnService, corsOrigins = [] } = {}) {
   const repository = tripRepository ?? new InMemoryTripRepository(seedTrips());
   const resolver = actorResolver ?? new DevelopmentActorResolver();
   if (
@@ -49,6 +49,7 @@ export function createApp({ environment = 'development', actorResolver, tripRepo
     authService,
     adminService,
     webauthnService,
+    corsOrigins,
   });
 }
 
@@ -62,6 +63,7 @@ export async function createRuntimeApp({
   enableEmailMailer = false,
   webauthnRpID,
   webauthnOrigin,
+  corsOrigins = [],
   env = process.env,
 } = {}) {
   const usesPostgres = Boolean(databaseUrl);
@@ -117,7 +119,7 @@ export async function createRuntimeApp({
   }
 
   return {
-    server: createApp({ environment, actorResolver, tripRepository: repository, authService, adminService, webauthnService }),
+    server: createApp({ environment, actorResolver, tripRepository: repository, authService, adminService, webauthnService, corsOrigins }),
     async close() { await repository.close?.(); },
   };
 }

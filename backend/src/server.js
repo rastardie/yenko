@@ -15,6 +15,14 @@ const runtime = await createRuntimeApp({
   enableEmailMailer: process.env.MAIL_ENABLED === 'true',
   webauthnRpID: process.env.WEBAUTHN_RP_ID,
   webauthnOrigin: process.env.WEBAUTHN_ORIGIN,
+  // Exact HTTPS origin(s) the deployed PWA is served from (e.g. Cloudflare
+  // Pages), comma-separated. No wildcard — see interfaces/http-server.js.
+  // Empty/unset means the web client cannot call this API cross-origin at
+  // all, which is correct for a backend only ever called by native apps.
+  corsOrigins: (process.env.CORS_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   env: process.env,
 });
 
